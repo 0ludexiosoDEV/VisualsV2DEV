@@ -80,7 +80,7 @@ end
     end
 end)()
 
-mainTab = shared.CreateTab("Visuals V2","/0ludexioso/VisualsV2/refs/heads/main/icon")
+mainTab = shared.CreateTab("Visuals V2","/0ludexiosoDEV/VisualsV2DEV/refs/heads/main/icon")
 
 local previousThrowableBridge=env.VisualsV2ThrowableAimBridge
 if type(previousThrowableBridge)=="table" then previousThrowableBridge.handler=nil end
@@ -7798,7 +7798,7 @@ local scopeHoldAnimations={["MM2"]="rbxassetid://15666234025",["MMV"]="rbxasseti
 local DATA_VERSION="0188b8f84670"
 local DATA_FILE="VisualsV2_Data.txt"
 local DATA_URL=type(env.VisualsV2DataUrl)=="string" and env.VisualsV2DataUrl
-    or "https://raw.githubusercontent.com/0ludexioso/VisualsV2/refs/heads/main/VisualsV2Data.txt"
+    or "https://raw.githubusercontent.com/0ludexiosoDEV/VisualsV2DEV/refs/heads/main/VisualsV2Data.txt"
 local dataStatus={source="not needed",records=0,expected=DATA_VERSION}
 ;(function()
     if scopeOnly then return end
