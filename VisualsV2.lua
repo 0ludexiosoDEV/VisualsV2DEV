@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-43"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-44"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -11284,7 +11284,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-43",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-22-fixes-44",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -19940,8 +19940,8 @@ end)()
 --    up to 5x that); otherwise they circle you.
 --  * Hidden Knife Interception: the fireflies wait scattered high above you (20 to 30 studs
 --    up, drifting), so nobody sees them round you; a knife coming at you brings them all
---    straight down across its path at a fixed range round you (the Firefly Distance out to
---    2.6 studs further), then back up.
+--    straight down across its path, out as far as the Interception Distance reaches (as
+--    Knife Interception does), then back up.
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
 --    a firefly or has flown its course, the fireflies are free for the next throw.)
 --    Wherever they go, a firefly is never put nearer another player than you: the game
@@ -20266,7 +20266,7 @@ end
 local function adoptBomb(part)
     if fakeBomb.part==part then return end
     releaseBomb()
-    fakeBomb.part=part
+    fakeBomb.part=part;fakeBomb.last=part
     local ok,collide=pcall(function() return part.CanCollide end)
     fakeBomb.collide=ok and collide or nil
     pcall(function() part.CanCollide=false;part.AssemblyLinearVelocity=Vector3.zero end)
@@ -21157,52 +21157,34 @@ local function skySpots(count,time)
     end
     return spots
 end
--- Knife Interception's spots: rows along the knife's path, between it and the one protected,
--- from 2.2 studs out to a little short of where the knife was first seen; each row a plus (on
--- the path, either side of it, above and below it), so a knife a little off its line still
--- meets them. Only the stretch of the path that stays yours is used (nearer you than
--- anyone else, the knife's thrower too); when none of it is, the rows as usual.
+-- Knife Interception's spots (Hidden Knife Interception's too): rows along the knife's path,
+-- between it and the one protected, from 2.2 studs out to a little short of where the knife
+-- was first seen, as far as the Interception Distance reaches; each row a plus (on the path,
+-- either side of it, above and below it), so a knife a little off its line still meets them.
+-- (They're only there while a knife flies, too short a time for the game to hand them to
+-- anyone else, so they go anywhere on its path.)
 local CROSS={Vector2.new(0,0),Vector2.new(0.45,0),Vector2.new(-0.45,0),Vector2.new(0,0.45),Vector2.new(0,-0.45)}
-local function interceptPoints(threat,count,reach,wide,fixedAt)
+local function interceptPoints(threat,count,reach)
     local direction=threat.direction
     local side=direction:Cross(Vector3.yAxis)
     side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
     local up=side:Cross(direction)
     up=up.Magnitude>0.01 and up.Unit or Vector3.yAxis
     local record=threat.record
-    local from=fixedAt or 2.2
     local length=math.clamp(threat.along-2.2,1,14*reach)
-    if fixedAt then
-        -- (a fixed range round you: from the Firefly Distance out to 2.6 studs further)
-        length=math.clamp(threat.along-from,0.5,2.6)
-    elseif record then
+    if record then
         if not record.length or record.reach~=reach then record.length=length;record.reach=reach end
         length=math.max(record.length,1)
     end
     local perRow=math.min(#CROSS,math.max(count,1))
     local rows=math.max(1,math.ceil(count/perRow))
-    local backs={}
-    for row=0,rows-1 do backs[#backs+1]=from+row*(length/rows) end
-    -- (for someone else, all of the path up to the knife is looked at: the stretch near
-    -- you may be further out than the rows would go)
-    local reachOut=wide and math.max(length,threat.along-3) or length
-    local mineBacks,all={},true
-    local back=from
-    while back<=from+reachOut do
-        if own.mine(threat.closest-direction*back) then mineBacks[#mineBacks+1]=back
-        elseif back<=from+length then all=false end
-        back=back+0.5
-    end
-    if not all and #mineBacks>0 then
-        for row=0,rows-1 do backs[row+1]=mineBacks[math.floor(row*#mineBacks/rows)+1] end
-    end
     local points={}
     for n=1,count do
         local row=math.floor((n-1)/perRow)
         local lane=CROSS[(n-1)%perRow+1]
-        points[#points+1]=threat.closest-direction*backs[row+1]+side*lane.X+up*lane.Y
+        points[#points+1]=threat.closest-direction*(2.2+row*(length/rows))+side*lane.X+up*lane.Y
     end
-    return points,(not all and #mineBacks==0)
+    return points
 end
 local function clusterSpots(threat,center,count)
     local direction=threat.direction
@@ -21300,7 +21282,7 @@ local function step(dt)
     for _,part in ipairs(list) do if owned(part) then ownedCount=ownedCount+1 end end
     diagnostics.owned=ownedCount
     -- (knives are followed whenever protection is on, so a throw is known from its start)
-    local knivesComing=protecting() and knifeThreats(root,dt,mode.intercept and settings.interceptReach or 1) or {}
+    local knivesComing=protecting() and knifeThreats(root,dt,(mode.intercept or mode.sky) and settings.interceptReach or 1) or {}
     if #list==0 then diagnostics.threat=settings.autoJar and "waiting for the jar" or "no fireflies (use your jar)";letGo();return end
     if not protecting() then diagnostics.threat="auto jar only";letGo();return end
     if not holding or os.clock()-calmAt>0.5 then
@@ -21373,13 +21355,9 @@ local function step(dt)
             end
             kind="on the knife"
         else
-            -- Knife Shield: every firefly to the spot it would hit (for someone else that spot
-            -- is nearer them than you, so it wouldn't stay yours: across its path instead)
+            -- Knife Shield: every firefly to the spot it would hit
             local spots,impact=nil,nil
-            if mode.shield then
-                spots,impact=clusterSpots(threat,center,#free)
-                if guardRoot and not own.mine(impact) then spots=nil end
-            end
+            if mode.shield then spots,impact=clusterSpots(threat,center,#free) end
             if spots then
                 for _,point in ipairs(spots) do if #free==0 then break end;take(point) end
                 diagnostics.lastImpact=impact
@@ -21388,20 +21366,12 @@ local function step(dt)
                 -- Knife Interception: along its path, between it and the one protected, out as
                 -- far as the Interception Distance reaches (1 = 14 studs, up to 5x). They stay
                 -- put while it comes, so it flies into them.
-                local reach=mode.intercept and settings.interceptReach or 1
-                local count=math.min(#free,math.ceil(7*reach)*#CROSS)
-                -- (Hidden Knife Interception: all of them, at a fixed range round you, the
-                -- Firefly Distance out to 2.6 studs further)
-                local fixedAt=mode.sky and not guardRoot and settings.distance or nil
-                if fixedAt then count=#free end
-                local points,notMine=interceptPoints(threat,count,reach,guardRoot~=nil,fixedAt)
-                -- (for someone else, with no spot on its path that stays yours: left alone)
-                if guardRoot and notMine then
-                    kind=nil
-                else
-                    for _,point in ipairs(points) do take(point) end
-                    kind=mode.shield and "blocking a knife" or "intercepting a knife"
-                end
+                -- (Hidden Knife Interception: every one of them, out as far as Knife
+                -- Interception goes)
+                local reach=(mode.intercept or mode.sky) and settings.interceptReach or 1
+                local count=mode.sky and #free or math.min(#free,math.ceil(7*reach)*#CROSS)
+                for _,point in ipairs(interceptPoints(threat,count,reach)) do take(point) end
+                kind=mode.shield and "blocking a knife" or "intercepting a knife"
             end
         end
         if kind then
@@ -21722,12 +21692,93 @@ local function statusText()
 end
 -- (Fake Bomb As A Firefly: none out, the toy ready, nothing else using your hands, Auto Get
 -- Tools done: one thrown out, at most every half second)
+-- (the Fake Bomb thrown the way Bomb Jump throws it, which is what works in the game: the toy
+-- in hand a moment, its Remote told where to put the bomb (at your feet, a little in front,
+-- so the game hands it to you), and the toy straight back with what you held back in your
+-- hand. The bomb that lands there is the one kept)
+local function bombPartLike(part)
+    if not part:IsA("BasePart") or part.Anchored then return false end
+    local name=part.Name:lower()
+    local parentName=part.Parent and part.Parent.Name:lower() or ""
+    if not (name:find("fakebomb",1,true) or parentName:find("fakebomb",1,true) or name=="bomb" or parentName=="bomb"
+        or name=="handle") then return false end
+    return not inCharacterOrTool(part)
+end
+local function fakeBombTool()
+    for _,container in ipairs({LocalPlayer.Character,LocalPlayer:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _,tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and tool.Name:lower():gsub("%s","")=="fakebomb" then return tool end
+            end
+        end
+    end
+end
+local function throwFakeBomb()
+    local root,character=myRoot()
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid then return nil,"no character" end
+    local tool=fakeBombTool()
+    if not tool then
+        -- (fetched, as Bomb Jump and Auto Get Tools do)
+        pcall(function() game:GetService("ReplicatedStorage").Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb") end)
+        local deadline=os.clock()+1.5
+        repeat task.wait(0.05);tool=fakeBombTool() until tool or os.clock()>deadline
+    end
+    if not tool then return nil,"no Fake Bomb toy" end
+    if tool.Enabled==false then return nil,"the Fake Bomb is on cooldown" end
+    local remote=tool:FindFirstChild("Remote")
+    if not (remote and remote:IsA("RemoteEvent")) then
+        -- (a Fake Bomb without that Remote: Bomb Fling's way)
+        local fling=runtime.BombFling
+        if fling and type(fling.GetBomb)=="function" then
+            local ok,part=pcall(fling.GetBomb)
+            if ok and typeof(part)=="Instance" then return part end
+        end
+        return nil,"the Fake Bomb has no Remote"
+    end
+    local backpack=LocalPlayer:FindFirstChildOfClass("Backpack")
+    local held=nil
+    for _,child in ipairs(character:GetChildren()) do
+        if child:IsA("Tool") and child~=tool then held=child;break end
+    end
+    local position=root.Position+(flat(root.CFrame.LookVector) or Vector3.zAxis)*3
+    fakeBomb.found=nil;fakeBomb.anyNew=nil;fakeBomb.throwFrom=position;fakeBomb.throwAt=os.clock()
+    pcall(function() tool.Parent=character end)
+    RunService.Heartbeat:Wait()
+    pcall(function() remote:FireServer(CFrame.new(position),50) end)
+    task.wait(0.15)
+    if tool.Parent==character then pcall(function() tool.Parent=backpack or tool.Parent end) end
+    if held and held.Parent and held.Parent~=character then pcall(function() humanoid:EquipTool(held) end) end
+    local deadline=os.clock()+2.5
+    while os.clock()<deadline and not fakeBomb.found do task.wait(0.05) end
+    if not fakeBomb.found then
+        -- (looked for round where it went)
+        local params=OverlapParams.new()
+        params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={character}
+        local ok,parts=pcall(function() return workspace:GetPartBoundsInRadius(position,15,params) end)
+        if ok and type(parts)=="table" then
+            for _,part in ipairs(parts) do if bombPartLike(part) then fakeBomb.found=part;break end end
+        end
+    end
+    local found=fakeBomb.found
+    if not found and fakeBomb.anyNew and fakeBomb.anyNew.Parent then found=fakeBomb.anyNew end
+    fakeBomb.found=nil;fakeBomb.anyNew=nil;fakeBomb.throwAt=nil
+    if not found then return nil,"the thrown bomb wasn't found" end
+    -- (a bomb in several pieces is moved as one)
+    local okRoot,assembly=pcall(function() return found.AssemblyRootPart end)
+    if okRoot and typeof(assembly)=="Instance" and not assembly.Anchored then found=assembly end
+    return found
+end
+-- (Fake Bomb As A Firefly: none out, the toy ready, nothing else using your hands, Auto Get
+-- Tools done (12 s at most): one thrown out. A try that doesn't work waits longer each time)
 local function bombStep()
     if not settings.fakeBomb or not runtimeAlive then releaseBomb();return end
     if bombFlinging() then releaseBomb();return end
     if fakeBomb.part and not bombAlive(fakeBomb.part) then releaseBomb() end
-    local fling=runtime.BombFling
-    if fakeBomb.part or fakeBomb.deploying or not fling or type(fling.GetBomb)~="function" then return end
+    if fakeBomb.part or fakeBomb.deploying then return end
+    -- (the one thrown before, back from Bomb Fling and still out: taken back)
+    if fakeBomb.last and bombAlive(fakeBomb.last) then adoptBomb(fakeBomb.last);return end
     if os.clock()<fakeBomb.checkAt then return end
     fakeBomb.checkAt=os.clock()+0.5
     if not protecting() or jar.busy then return end
@@ -21737,17 +21788,29 @@ local function bombStep()
     local tools=runtime.AutoGetTools
     if tools and type(tools.Busy)=="function" then
         local ok,busy=pcall(tools.Busy)
-        if ok and busy then return end
+        if ok and busy then
+            fakeBomb.busySince=fakeBomb.busySince or os.clock()
+            if os.clock()-fakeBomb.busySince<12 then return end
+        else
+            fakeBomb.busySince=nil
+        end
     end
-    -- (not while you hold the Fake Bomb yourself)
+    -- (not while you hold the Fake Bomb yourself, nor while it's cooling down)
     local held=character:FindFirstChildOfClass("Tool")
     if held and held.Name:lower():gsub("%s","")=="fakebomb" then return end
+    local tool=fakeBombTool()
+    if tool and tool.Enabled==false then return end
     fakeBomb.deploying=true
     task.spawn(function()
-        local ok,part=pcall(fling.GetBomb)
+        local ok,part,reason=pcall(throwFakeBomb)
         fakeBomb.deploying=false
         if ok and typeof(part)=="Instance" and bombAlive(part) and settings.fakeBomb and runtimeAlive and not bombFlinging() then
+            fakeBomb.failures=0
             adoptBomb(part)
+        else
+            fakeBomb.failures=(fakeBomb.failures or 0)+1
+            fakeBomb.checkAt=os.clock()+math.min(16,2^fakeBomb.failures)
+            diagnostics.fakeBombError=ok and tostring(reason or "no bomb") or tostring(part)
         end
     end)
 end
@@ -21763,6 +21826,22 @@ local function watch()
     watchAdded=workspace.DescendantAdded:Connect(function(object)
         if object:IsA("BasePart") then
             task.delay(0.05,function() if object.Parent then consider(object);considerCap(object) end end)
+            -- (Fake Bomb As A Firefly: the bomb landing where it was just thrown)
+            if fakeBomb.throwAt and os.clock()-fakeBomb.throwAt<3 then
+                task.defer(function()
+                    if fakeBomb.found or not fakeBomb.throwFrom or not object.Parent then return end
+                    local ok,near=pcall(function() return (object.Position-fakeBomb.throwFrom).Magnitude end)
+                    if not ok then return end
+                    if near<20 and bombPartLike(object) then fakeBomb.found=object
+                    elseif near<10 and not fakeBomb.anyNew and not object.Anchored and not inCharacterOrTool(object)
+                        and not fireflies[object] and not caps[object] and not object.Name:lower():find("firefl",1,true)
+                        and math.max(object.Size.X,object.Size.Y,object.Size.Z)<=3 then
+                        -- (a new piece right where it was thrown, whatever it's called: kept in
+                        -- case nothing named like a bomb shows up)
+                        fakeBomb.anyNew=object
+                    end
+                end)
+            end
         end
         local name=object.Name:lower()
         if name=="throwingknife" or name=="knifevisual" or (object.Parent==workspace and name:find("knife",1,true)) then
