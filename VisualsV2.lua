@@ -364,7 +364,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-34"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-35"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -10803,7 +10803,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-21-fixes-34",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-21-fixes-35",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -19406,18 +19406,19 @@ end)()
 --    whole body; in Assassin (you have a knife too) they leave your front open so your own
 --    throws get through. A thrown knife that would hit you: every firefly goes to the spot
 --    it would hit, then back. Paused while you are the murderer, so Firefly Clutch works.
---  * Knife Interception: a thrown knife coming at you gets a line of fireflies across its
---    path between it and you; otherwise they circle you.
+--  * Knife Interception: a thrown knife coming at you gets fireflies along its path between
+--    it and you (on the path and either side of it), out as far as the Interception
+--    Distance slider says (1 = as before: knives within 60 studs, out to 14 studs from you;
+--    up to 5x that); otherwise they circle you.
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
 --    a firefly or has flown its course, the fireflies are free for the next throw.)
 --  MMV
---  * Gun Shield: the original MMV shield ("Script do Escudo"): a filled square grid of
---    fireflies 0.35 apart, 1.8 studs off your back, centred at your middle and turned with
---    your body. Here it flips to your front or your back, whichever faces the sheriff/hero,
---    and is 7 x 7 instead of 5 x 5 so it covers your whole torso and chest (filled from the
---    middle out); more fireflies than the grid holds cover your other side too. Behind a
---    wall and 80 studs or more away: the ring aura instead. A thrown knife at you: all of
---    them onto the knife.
+--  * Gun Shield: the original MMV shield (shield v13): a filled 5 x 5 grid of fireflies
+--    0.55 apart, 1.8 studs off your body, centred at your middle and turned with it. Here
+--    it switches between your back and your front, whichever faces the sheriff/hero, so your
+--    whole main body is covered from them (filled from the middle out; more fireflies than
+--    the grid holds cover your other side too). Behind a wall and 80 studs or more away:
+--    the ring aura instead. A thrown knife at you: all of them onto the knife, as in v13.
 --  Both (Firefly Ring Aura and Follow Mouse can be on together)
 --  * Firefly Ring Aura: the fireflies circle you, each rising and falling (MM2: it also
 --    makes the shield's fireflies swap places now and then).
@@ -19458,15 +19459,15 @@ local settings={
     protectShield=C("fireflyProtectOtherShield",false)==true,
     targetName=type(C("fireflyProtectOtherName",""))=="string" and C("fireflyProtectOtherName","") or "",
     distance=math.clamp(tonumber(C("fireflyProtectDistance",2.2)) or 2.2,1,4),
+    interceptReach=math.clamp(tonumber(C("fireflyInterceptReach",1)) or 1,1,5),
     ringDistance=math.clamp(tonumber(C("fireflyRingDistance",3)) or 3,1,8),
     ringSpeed=math.clamp(tonumber(C("fireflyRingSpeed",3)) or 3,0,10),
 }
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
--- MMV's Gun Shield, from the original script: spacing, distance off your back and height
--- as there (SHIELD_SPACING 0.35, SHIELD_DISTANCE 1.8, SHIELD_HEIGHT 0); 7 x 7 instead of
--- 5 x 5 to cover your whole torso
-local SHIELD={rows=7,columns=7,spacing=0.35,distance=1.8,height=0}
+-- MMV's Gun Shield, as in the original (shield v13): SHIELD_ROWS/COLS 5, SHIELD_SPACING
+-- 0.55, SHIELD_DISTANCE 1.8, SHIELD_HEIGHT 0
+local SHIELD={rows=5,columns=5,spacing=0.55,distance=1.8,height=0}
 local MMV_FAR=80            -- a gun holder behind a wall this far away: just the ring aura
 local MAX_FIREFLIES=90
 local NEAR=40               -- a murderer this close is shielded against even behind a wall
@@ -19633,6 +19634,8 @@ local function track(part)
     list[#list+1]=part
     jar.spawnedAt=os.clock()
     pcall(function() part:SetAttribute(MARK,true);part.CanCollide=false end)
+    -- (massless, as the original shield makes them, so they never drag on anything)
+    pcall(function() fireflies[part].massless=part.Massless;part.Massless=true end)
 end
 local offsets=setmetatable({}, {__mode="k"})
 local blocking=setmetatable({}, {__mode="k"})
@@ -19647,6 +19650,7 @@ local function forget(part)
     local index=table.find(list,part)
     if index then table.remove(list,index) end
     if part.Parent then pcall(function() part.CanCollide=saved.collide;part:SetAttribute(MARK,nil) end) end
+    if part.Parent and saved.massless~=nil then pcall(function() part.Massless=saved.massless end) end
 end
 -- (nothing that is a bomb, a toy, a weapon or a coin is ever taken for a firefly)
 local NOT_FIREFLY={"coin","bullet","knife","shell","bomb","handle","gun","toy","balloon","pet","visualsv2"}
@@ -19684,7 +19688,7 @@ local function consider(part)
     if not named and not recent then return end
     if part.Anchored or inCharacterOrTool(part) then return end
     local size=part.Size
-    if math.max(size.X,size.Y,size.Z)>(named and 2.5 or 1.2) or math.min(size.X,size.Y,size.Z)<0.02 then return end
+    if math.max(size.X,size.Y,size.Z)>(named and 2.5 or 2) or math.min(size.X,size.Y,size.Z)<0.02 then return end
     -- (MMV's jar gives loose glowing bits: anything small that isn't part of a model of its own)
     if not named then
         local model=part:FindFirstAncestorOfClass("Model")
@@ -19870,9 +19874,19 @@ end
 -- ---------------------------------------------------------------- walls and attackers
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
+-- (what the wall checks look through: everyone's character, the fireflies, the camera;
+-- only rebuilt when one of those changes, or once a second, not every frame)
+local filterKey,filterAt="",-math.huge
 local function refreshFilter()
     local ignore={}
-    for _,plr in ipairs(Players:GetPlayers()) do if plr.Character then ignore[#ignore+1]=plr.Character end end
+    local key={}
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then ignore[#ignore+1]=plr.Character;key[#key+1]=tostring(plr.Character) end
+    end
+    key[#key+1]=tostring(#list);key[#key+1]=tostring(list[#list])
+    key=table.concat(key,"|")
+    if key==filterKey and os.clock()-filterAt<1 then return end
+    filterKey,filterAt=key,os.clock()
     for _,part in ipairs(list) do ignore[#ignore+1]=part end
     local camera=workspace.CurrentCamera
     if camera then ignore[#ignore+1]=camera end
@@ -19940,7 +19954,8 @@ end
 -- it has stopped moving (stuck in something, or blocked) for 0.15 s, sat on a firefly for a
 -- moment, or flown longer than any throw, it's done with, so the fireflies are back in place and ready for
 -- the next throw. (One that later flies off again by itself is watched again.)
-local function knifeThreats(root,dt)
+local function knifeThreats(root,dt,reach)
+    local farthest=math.min(60*(reach or 1),300)
     local center=root.Position+LIFT
     for _,record in pairs(knives) do record.flying=false end
     local threats={}
@@ -19976,7 +19991,7 @@ local function knifeThreats(root,dt)
                 local direction=speed>5 and velocity.Unit or part.CFrame.LookVector
                 local toMe=center-position
                 local distance=toMe.Magnitude
-                if distance<=60 and distance>0.5 then
+                if distance<=farthest and distance>0.5 then
                     local along=toMe:Dot(direction)
                     local heading=along/distance
                     if along>0 and heading>0.55 then
@@ -20053,7 +20068,7 @@ local function ringSpots(count,radius,heights,spin,lookYaw,gap)
     end
     return spots
 end
--- MMV: the original shield's square grid (getShieldPositions): behind you along -LookVector
+-- MMV: the original shield's square grid (getGridPositions): behind you along -LookVector
 -- (or in front, side=1), across your RightVector and UpVector, so it turns and leans with
 -- your body. Filled from the middle out; past a full grid, the next ones go on your other
 -- side. (Offsets from your middle, LIFT up.)
@@ -20221,6 +20236,38 @@ local function usable(center,spots,need)
 end
 
 local clock=0
+-- each firefly's spot in the formation, kept while the formation and the number of
+-- fireflies stay the same; when they change, each takes the nearest free spot
+local slotOf=setmetatable({}, {__mode="k"})
+local slotKey=nil
+local function assignSlots(parts,points,key)
+    local valid=key==slotKey
+    if valid then
+        for _,part in ipairs(parts) do if not slotOf[part] then valid=false;break end end
+    end
+    if valid then return slotOf end
+    slotKey=key
+    table.clear(slotOf)
+    local taken={}
+    local spotCount=#points
+    for index,part in ipairs(parts) do
+        if index>spotCount then slotOf[part]=index
+        else
+            local best,bestDistance=nil,math.huge
+            local position=part.Position
+            for slot=1,spotCount do
+                if not taken[slot] then
+                    local distance=(points[slot]-position).Magnitude
+                    if distance<bestDistance then best,bestDistance=slot,distance end
+                end
+            end
+            best=best or index
+            taken[best]=true
+            slotOf[part]=best
+        end
+    end
+    return slotOf
+end
 -- (a firefly blocking a knife collides, so the knife hits it; the others don't, so they
 -- never push you about)
 local function setBlocking(part,value)
@@ -20349,7 +20396,7 @@ local function step(dt)
     for _,part in ipairs(list) do if owned(part) then ownedCount=ownedCount+1 end end
     diagnostics.owned=ownedCount
     -- (knives are followed whenever protection is on, so a throw is known from its start)
-    local knivesComing=protecting() and knifeThreats(root,dt) or {}
+    local knivesComing=protecting() and knifeThreats(root,dt,mode.intercept and settings.interceptReach or 1) or {}
     if #list==0 then diagnostics.threat=settings.autoJar and "waiting for the jar" or "no fireflies (use your jar)";letGo();return end
     if not protecting() then diagnostics.threat="auto jar only";letGo();return end
     if not holding or os.clock()-calmAt>0.5 then
@@ -20410,15 +20457,20 @@ local function step(dt)
             diagnostics.lastImpact=impact
             kind="blocking a knife"
         else
-            -- Knife Interception: a line across its path, between it and you
+            -- Knife Interception: fireflies along its path, between it and you, out as far as
+            -- the Interception Distance reaches (1 = 14 studs, up to 5x), three abreast (on the
+            -- path itself and either side of it)
+            local reach=settings.interceptReach
             local direction=threat.direction
             local side=direction:Cross(Vector3.yAxis)
             side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
-            local length=math.clamp(threat.along-2.2,1,14)
-            local count=math.min(#free,14)
+            local length=math.clamp(threat.along-2.2,1,14*reach)
+            local count=math.min(#free,math.ceil(14*reach))
+            local rows=math.max(1,math.ceil(count/3))
+            local LANES={0,0.35,-0.35}
             for n=1,count do
-                local back=2.2+math.floor((n-1)/2)*(length/math.max(1,math.ceil(count/2)))
-                take(threat.closest-direction*back+side*((n%2==0) and 0.45 or -0.45))
+                local back=2.2+math.floor((n-1)/3)*(length/math.max(1,rows-1))
+                take(threat.closest-direction*math.min(back,2.2+length)+side*LANES[(n-1)%3+1])
             end
             kind="intercepting a knife"
         end
@@ -20544,8 +20596,12 @@ local function step(dt)
         -- (swapping places now and then: MM2's grid with the ring aura on; MMV's shield keeps
         -- every firefly on its own spot, as in the original)
         local order=grid and not isMMV and settings.ring and shuffled(#free) or nil
+        -- (when fireflies join or leave, or the formation changes, each one takes the nearest
+        -- free spot instead of all of them moving round one place: no jolt as more come out)
+        local key=(grid and "g" or orbit and "o" or swarm and "s" or "r")..#points..":"..#free
+        local stable=not order and assignSlots(free,points,key)
         for index,part in ipairs(free) do
-            local slot=order and order[index] or index
+            local slot=order and order[index] or stable and stable[part] or index
             local point=points[(slot-1)%#points+1]
             if point then
                 if slot>#points and not isMMV then point=point+Vector3.new(0,0.35*math.floor((slot-1)/#points),0) end
@@ -20617,12 +20673,17 @@ local sweepAt=0
 local sweepParams=OverlapParams.new()
 sweepParams.FilterType=Enum.RaycastFilterType.Exclude
 local function sweep()
-    if os.clock()-sweepAt<0.5 then return end
+    -- (often in the seconds after the jar opens, when fireflies are coming out; otherwise
+    -- only now and then, close by: looking over everything nearby every half second made
+    -- the game hitch)
+    local busy=os.clock()-math.max(jar.usedAt,jar.spawnedAt)<12
+    if os.clock()-sweepAt<(busy and 0.5 or 3) then return end
     sweepAt=os.clock()
     local root,character=myRoot()
     if not root then return end
     sweepParams.FilterDescendantsInstances={character}
-    local ok,parts=pcall(function() return workspace:GetPartBoundsInRadius(root.Position,40,sweepParams) end)
+    local radius=busy and 30 or 20
+    local ok,parts=pcall(function() return workspace:GetPartBoundsInRadius(root.Position,radius,sweepParams) end)
     if not ok or type(parts)~="table" then return end
     for _,part in ipairs(parts) do
         if not fireflies[part] then pcall(consider,part);pcall(considerCap,part) end
@@ -20838,6 +20899,10 @@ else
     section:AddSlider("Firefly Distance",1.01,4,settings.distance,function(value)
         settings.distance=math.clamp(tonumber(value) or 2.2,1,4);SetCfg("fireflyProtectDistance",settings.distance)
     end)
+    -- (how far out Knife Interception goes for a knife: 1 is as before, up to 5x as far)
+    section:AddSlider("Interception Distance",1.01,5,settings.interceptReach,function(value)
+        settings.interceptReach=math.clamp(tonumber(value) or 1,1,5);SetCfg("fireflyInterceptReach",settings.interceptReach)
+    end)
 end
 -- Protect Other Player: the fireflies protect the player picked instead of you
 pcall(function() section:AddLabel("Protect Other Player") end)
@@ -20883,7 +20948,7 @@ runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
-    settings.distance,settings.ringDistance,settings.ringSpeed=2.2,3,3
+    settings.distance,settings.ringDistance,settings.ringSpeed,settings.interceptReach=2.2,3,3,1
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
     stop()
     for _,part in ipairs(table.clone(list)) do forget(part) end
