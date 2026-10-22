@@ -364,7 +364,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-35"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-37"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -10803,7 +10803,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-21-fixes-35",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-21-fixes-37",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -19405,7 +19405,9 @@ end)()
 --    and far: the fireflies go round you. Several people with knives: they go round your
 --    whole body; in Assassin (you have a knife too) they leave your front open so your own
 --    throws get through. A thrown knife that would hit you: every firefly goes to the spot
---    it would hit, then back. Paused while you are the murderer, so Firefly Clutch works.
+--    it would hit, spread wide over it, then back (close up, a knife just out of the
+--    murderer's hand counts as aimed at you at once, and the waiting wall is smaller and
+--    denser). Paused while you are the murderer, so Firefly Clutch works.
 --  * Knife Interception: a thrown knife coming at you gets fireflies along its path between
 --    it and you (on the path and either side of it), out as far as the Interception
 --    Distance slider says (1 = as before: knives within 60 studs, out to 14 studs from you;
@@ -19414,7 +19416,7 @@ end)()
 --    a firefly or has flown its course, the fireflies are free for the next throw.)
 --  MMV
 --  * Gun Shield: the original MMV shield (shield v13): a filled 5 x 5 grid of fireflies
---    0.55 apart, 1.8 studs off your body, centred at your middle and turned with it. Here
+--    0.55 apart, 1 stud off your body, centred at your middle and turned with it. Here
 --    it switches between your back and your front, whichever faces the sheriff/hero, so your
 --    whole main body is covered from them (filled from the middle out; more fireflies than
 --    the grid holds cover your other side too). Behind a wall and 80 studs or more away:
@@ -19436,7 +19438,7 @@ end)()
 --    as Firefly Clutch's timer), without the jar's animation, only while the fireflies are
 --    of use (a protection mode on and someone who could hurt you within 200 studs, or the
 --    ring aura / follow mouse on), and puts back exactly what you were holding.
---  * The jar's cap, while it's out, goes along with the fireflies.
+--  * The jar's lid, while it's out, moves round with the fireflies as one of them.
 --  * In the lobby, or dead, with no attacker within 200 studs: just the ring aura (or the
 --    mouse swarm).
 --  * Firefly Clutch is off (its timer says DISABLED) while protection is working.
@@ -19466,8 +19468,8 @@ local settings={
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
 -- MMV's Gun Shield, as in the original (shield v13): SHIELD_ROWS/COLS 5, SHIELD_SPACING
--- 0.55, SHIELD_DISTANCE 1.8, SHIELD_HEIGHT 0
-local SHIELD={rows=5,columns=5,spacing=0.55,distance=1.8,height=0}
+-- 0.55, SHIELD_HEIGHT 0; 1 stud off your body (the original's 1.8, brought in closer)
+local SHIELD={rows=5,columns=5,spacing=0.55,distance=1,height=0}
 local MMV_FAR=80            -- a gun holder behind a wall this far away: just the ring aura
 local MAX_FIREFLIES=90
 local NEAR=40               -- a murderer this close is shielded against even behind a wall
@@ -19675,6 +19677,57 @@ local function notFirefly(part)
     end
     return false
 end
+-- (a part on its own: nothing welded or hinged to another part, and not a piece of
+-- something big like a door that swings; moving one of those can fling you. A firefly's
+-- own mover, tied to nothing else, doesn't count.)
+-- (body parts by name, so a ragdoll or a body left behind is never taken either)
+local BODY_PARTS={}
+for _,name in ipairs({"head","torso","uppertorso","lowertorso","humanoidrootpart","lefthand","righthand","leftfoot","rightfoot",
+    "leftlowerarm","rightlowerarm","leftupperarm","rightupperarm","leftlowerleg","rightlowerleg","leftupperleg","rightupperleg",
+    "left arm","right arm","left leg","right leg"}) do BODY_PARTS[name]=true end
+local function onItsOwn(part)
+    -- (never anything of a player: their body, what's worn or welded on them)
+    if BODY_PARTS[part.Name:lower()] then return false end
+    for _,plr in ipairs(Players:GetPlayers()) do
+        local character=plr.Character
+        if character and part:IsDescendantOf(character) then return false end
+    end
+    -- (each check on its own, so one the game can't answer doesn't skip the others)
+    local okAssembly,assembly=pcall(function() return part.AssemblyRootPart end)
+    if okAssembly and assembly and assembly~=part then return false end
+    local okJoints,jointed=pcall(function()
+        for _,joint in ipairs(part:GetJoints()) do
+            local other=nil
+            if joint:IsA("JointInstance") or joint:IsA("WeldConstraint") then
+                other=joint.Part0==part and joint.Part1 or joint.Part0
+            elseif joint:IsA("Constraint") then
+                local a,b=joint.Attachment0,joint.Attachment1
+                local pa,pb=a and a.Parent,b and b.Parent
+                other=(pa==part and pb) or (pb==part and pa) or nil
+            end
+            if other and other~=part and other:IsA("BasePart") then return true end
+        end
+        return false
+    end)
+    if okJoints and jointed then return false end
+    local okModel,inBig=pcall(function()
+        local model=part:FindFirstAncestorOfClass("Model")
+        if not model or model==workspace then return false end
+        -- (a body, even one without its Humanoid any more)
+        if model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head") or model:FindFirstChildWhichIsA("Humanoid",true) then return true end
+        local pieces=0
+        for _,child in ipairs(model:GetDescendants()) do
+            if child:IsA("BasePart") and child~=part then
+                pieces=pieces+1
+                local size=child.Size
+                if pieces>60 or math.max(size.X,size.Y,size.Z)>2.5 then return true end
+            end
+        end
+        return false
+    end)
+    if okModel and inBig then return false end
+    return true
+end
 local function consider(part)
     if not part:IsA("BasePart") or fireflies[part] then return end
     local name=part.Name:lower()
@@ -19688,7 +19741,8 @@ local function consider(part)
     if not named and not recent then return end
     if part.Anchored or inCharacterOrTool(part) then return end
     local size=part.Size
-    if math.max(size.X,size.Y,size.Z)>(named and 2.5 or 2) or math.min(size.X,size.Y,size.Z)<0.02 then return end
+    if math.max(size.X,size.Y,size.Z)>(named and 2.5 or 1.2) or math.min(size.X,size.Y,size.Z)<0.02 then return end
+    if not onItsOwn(part) then return end
     -- (MMV's jar gives loose glowing bits: anything small that isn't part of a model of its own)
     if not named then
         local model=part:FindFirstAncestorOfClass("Model")
@@ -19708,14 +19762,26 @@ end
 -- the jar's cap: while it's out (a few seconds after the jar opens) it goes along with the
 -- fireflies (only on your screen if the game doesn't let you move it)
 local caps={}
-local CAP_NAMES={handle2=true,lid=true,cap=true,jarlid=true,jarcap=true,top=true,cork=true}
+local CAP_NAMES={handle2=true,lid=true,jarlid=true,jarcap=true,cap=true,cork=true}
 local function considerCap(part)
-    if caps[part] or not part:IsA("BasePart") or not CAP_NAMES[part.Name:lower()] then return end
-    if os.clock()-jar.usedAt>5 and os.clock()-jar.spawnedAt>5 then return end
-    if inCharacterOrTool(part) then return end
+    if caps[part] or fireflies[part] or not part:IsA("BasePart") or not CAP_NAMES[part.Name:lower()] then return end
+    -- (only one that turns up right as your jar opens, right next to you, small, and loose:
+    -- nothing else that happens to be called that, like a piece of a door)
+    if os.clock()-jar.usedAt>3 then return end
+    if inCharacterOrTool(part) or not onItsOwn(part) then return end
+    local size=part.Size
+    if math.max(size.X,size.Y,size.Z)>1.5 then return end
+    local bombFling=runtime.BombFling
+    if bombFling and type(bombFling.IsBomb)=="function" then
+        local okBomb,bomb=pcall(bombFling.IsBomb,part)
+        if okBomb and bomb then return end
+    end
     local root=myRoot()
     local ok,distance=pcall(function() return (part.Position-root.Position).Magnitude end)
-    if not ok or distance>25 then return end
+    if not ok or distance>8 then return end
+    local count=0
+    for _ in pairs(caps) do count=count+1 end
+    if count>=2 then return end
     caps[part]={collide=part.CanCollide}
     pcall(function() part.CanCollide=false;part.LocalTransparencyModifier=0 end)
 end
@@ -19884,10 +19950,12 @@ local function refreshFilter()
         if plr.Character then ignore[#ignore+1]=plr.Character;key[#key+1]=tostring(plr.Character) end
     end
     key[#key+1]=tostring(#list);key[#key+1]=tostring(list[#list])
+    for part in pairs(caps) do key[#key+1]=tostring(part) end
     key=table.concat(key,"|")
     if key==filterKey and os.clock()-filterAt<1 then return end
     filterKey,filterAt=key,os.clock()
     for _,part in ipairs(list) do ignore[#ignore+1]=part end
+    for part in pairs(caps) do ignore[#ignore+1]=part end
     local camera=workspace.CurrentCamera
     if camera then ignore[#ignore+1]=camera end
     rayParams.FilterDescendantsInstances=ignore
@@ -19986,9 +20054,25 @@ local function knifeThreats(root,dt,reach)
             record.flying=not record.done and speed>5
             record.position=position
             record.direction=speed>5 and velocity.Unit or nil
+            if record.fromHand==nil then
+                -- (thrown from close by: right next to another player when it appeared)
+                record.fromHand=false
+                for _,plr in ipairs(Players:GetPlayers()) do
+                    if plr~=LocalPlayer then
+                        local other=aliveRoot(plr)
+                        if other and (other.Position-position).Magnitude<7 and (other.Position-center).Magnitude<25 then record.fromHand=true;break end
+                    end
+                end
+            end
             if not record.done then
-                -- (a knife the game moves without a velocity points the way it flies)
-                local direction=speed>5 and velocity.Unit or part.CFrame.LookVector
+                -- the way it flies: as measured; else the speed the game gives it; a knife just
+                -- out of the hand of someone close by, not moving yet, is taken as aimed at
+                -- you (close up there's no time to wait and see); else the way it points
+                local direction
+                if measured.Magnitude>5 then direction=measured.Unit
+                elseif speed>5 then direction=velocity.Unit
+                elseif record.fromHand and now-record.at<0.2 and (center-position).Magnitude>0.5 then direction=(center-position).Unit
+                else direction=part.CFrame.LookVector end
                 local toMe=center-position
                 local distance=toMe.Magnitude
                 if distance<=farthest and distance>0.5 then
@@ -20302,6 +20386,7 @@ local function shuffled(count)
 end
 -- where a knife will meet your body, and a tight cluster of spots there (a disc across the
 -- knife's path, then a few more back along it), so it can't get through
+local GOLDEN=math.pi*(3-math.sqrt(5))
 local function clusterSpots(threat,center,count)
     local direction=threat.direction
     local miss=(center-threat.closest).Magnitude
@@ -20310,19 +20395,19 @@ local function clusterSpots(threat,center,count)
     local side=direction:Cross(Vector3.yAxis)
     side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
     local up=side:Cross(direction).Unit
-    local spots={impact}
-    -- (a little spread out, so a knife a bit off its line still meets them)
-    local rings={{0.45,6},{0.9,12},{1.35,18}}
-    for _,ring in ipairs(rings) do
-        for index=1,ring[2] do
-            local angle=(index/ring[2])*2*math.pi
-            spots[#spots+1]=impact+side*math.cos(angle)*ring[1]+up*math.sin(angle)*ring[1]
-        end
-    end
-    local back=1
-    while #spots<count do
-        spots[#spots+1]=impact-direction*back*0.8
-        back=back+1
+    -- (wide over the spot it will hit, so a knife a bit off its line still meets them:
+    -- spread evenly over a disc 2.2 to 3.6 studs across, the more fireflies the wider;
+    -- past 30, a second disc just behind the first)
+    local radius=math.clamp(0.55+0.2*math.sqrt(count),1.1,1.8)
+    local perLayer=math.max(1,math.min(count,30))
+    local spots={}
+    for index=1,count do
+        local layer=math.floor((index-1)/perLayer)
+        local i=(index-1)%perLayer
+        local inLayer=math.min(perLayer,count-layer*perLayer)
+        local r=radius*math.sqrt((i+0.5)/inLayer)
+        local angle=i*GOLDEN+layer*0.9
+        spots[#spots+1]=impact-direction*(layer*0.6)+side*math.cos(angle)*r+up*math.sin(angle)*r
     end
     return spots,impact
 end
@@ -20401,7 +20486,11 @@ local function step(dt)
     if not protecting() then diagnostics.threat="auto jar only";letGo();return end
     if not holding or os.clock()-calmAt>0.5 then
         holding=true;calmAt=os.clock()
-        for _,part in ipairs(list) do calm(part) end
+        for index=#list,1,-1 do
+            local part=list[index]
+            if onItsOwn(part) then calm(part) else forget(part) end
+        end
+        for part in pairs(caps) do if not onItsOwn(part) then forgetCap(part) end end
     end
     -- only attackers within 200 studs count (in the lobby, or dead and far from them,
     -- the fireflies just circle you)
@@ -20414,6 +20503,8 @@ local function step(dt)
     local solid={}
     local free={}
     for _,part in ipairs(list) do free[#free+1]=part end
+    -- (the jar's lid, while it's out, takes a place in the formation like a firefly)
+    for part in pairs(caps) do free[#free+1]=part end
     local lookYaw=math.atan2(-root.CFrame.LookVector.X,-root.CFrame.LookVector.Z)
     local function take(point)
         local best,bestIndex,bestDistance=nil,nil,math.huge
@@ -20565,7 +20656,11 @@ local function step(dt)
                     if smoothDirection.Magnitude<0.01 then smoothDirection=facing end
                     local frame=frameFacing(center,smoothDirection.Unit)
                     spots={}
-                    for _,cell in ipairs(wallSpots(count,3.2,5)) do
+                    -- (sized to what of you they can aim at from there: the closer they are,
+                    -- the smaller and denser, so close up there are no gaps to throw through)
+                    local away=direction.Magnitude
+                    local scale=math.clamp((away-settings.distance)/math.max(away,0.1),0.45,1)
+                    for _,cell in ipairs(wallSpots(count,3.2*scale,5*scale)) do
                         spots[#spots+1]=frame:PointToWorldSpace(Vector3.new(cell.X,cell.Y,-settings.distance))-center
                     end
                     grid=true
@@ -20606,22 +20701,6 @@ local function step(dt)
             if point then
                 if slot>#points and not isMMV then point=point+Vector3.new(0,0.35*math.floor((slot-1)/#points),0) end
                 targets[part]=point
-            end
-        end
-    end
-    -- the jar's cap, while it's out: in the middle of the fireflies
-    if next(caps) then
-        local sum,n=Vector3.zero,0
-        for part,target in pairs(targets) do
-            if fireflies[part] and not solid[part] then sum=sum+target;n=n+1 end
-        end
-        if n==0 then for _,target in pairs(targets) do sum=sum+target;n=n+1 end end
-        if n>0 then
-            local middle=sum/n
-            local index=0
-            for part in pairs(caps) do
-                targets[part]=middle+Vector3.new(0,0.3*index,0)
-                index=index+1
             end
         end
     end
