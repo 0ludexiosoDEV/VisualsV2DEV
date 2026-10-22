@@ -364,7 +364,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-30"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-34"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -10803,7 +10803,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-21-fixes-30",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-21-fixes-34",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -19399,7 +19399,7 @@ end)()
 -- your Firefly Jar are moved to where an attack would come from, locked to your body as
 -- you move (placed after every physics step and again just before the frame is drawn,
 -- carrying your speed, with the jar's own movers held off).
---  MM2 (Knife Shield, Knife Interception and Block Murderer: one of the three at a time)
+--  MM2 (Knife Shield and Knife Interception: one at a time)
 --  * Knife Shield: one murderer in sight, or hidden behind a wall but near: a rectangle of
 --    fireflies in front of you, facing them (raised or lowered to where they are). Hidden
 --    and far: the fireflies go round you. Several people with knives: they go round your
@@ -19408,18 +19408,16 @@ end)()
 --    it would hit, then back. Paused while you are the murderer, so Firefly Clutch works.
 --  * Knife Interception: a thrown knife coming at you gets a line of fireflies across its
 --    path between it and you; otherwise they circle you.
---  * Block Murderer: with the murderer within 100 studs or in sight, the fireflies wait in
---    a wall well out from the murderer, round their front and right (knife) side, held to
---    their body; a knife they throw gets fireflies put across its path just ahead of it.
---    Murderer hidden behind a wall and further away: round you, as Knife Shield does.
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
 --    a firefly or has flown its course, the fireflies are free for the next throw.)
 --  MMV
---  * Gun Shield: the original MMV shield (5 x 5 fireflies 0.55 apart, 1.8 studs from you,
---    shuffling), on the side of you the sheriff/hero is on, snapped to one of eight sides
---    (front, back, left, right and the four corners), tilted up or down to where they are.
---    Behind a wall and 80 studs or more away: the ring aura instead. A thrown knife at you:
---    all of them onto the knife, as in the original.
+--  * Gun Shield: the original MMV shield ("Script do Escudo"): a filled square grid of
+--    fireflies 0.35 apart, 1.8 studs off your back, centred at your middle and turned with
+--    your body. Here it flips to your front or your back, whichever faces the sheriff/hero,
+--    and is 7 x 7 instead of 5 x 5 so it covers your whole torso and chest (filled from the
+--    middle out); more fireflies than the grid holds cover your other side too. Behind a
+--    wall and 80 studs or more away: the ring aura instead. A thrown knife at you: all of
+--    them onto the knife.
 --  Both (Firefly Ring Aura and Follow Mouse can be on together)
 --  * Firefly Ring Aura: the fireflies circle you, each rising and falling (MM2: it also
 --    makes the shield's fireflies swap places now and then).
@@ -19430,7 +19428,9 @@ end)()
 --    protection mode on, only while it isn't needed (MM2: no murderer in sight or near;
 --    MMV: the gun holder behind a wall and 80+ studs away).
 --  * Protect Other Player: the player you pick is protected instead of you (Knife
---    Interception or Knife Shield in MM2, Gun Shield in MMV), the same way.
+--    Interception or Knife Shield in MM2; in MMV just the toggle, with the Gun Shield), the
+--    same way. The moment they
+--    die (or are out of the round, or far off in the lobby), it's you again.
 --  * Auto Use Firefly Jar: uses the jar the moment its cooldown is over (the same 16 s
 --    as Firefly Clutch's timer), without the jar's animation, only while the fireflies are
 --    of use (a protection mode on and someone who could hurt you within 200 studs, or the
@@ -19450,7 +19450,6 @@ pcall(function() status=section:AddParagraph("Status","Off",true) end)
 local settings={
     shield=C("fireflyProtectShield",false)==true,
     intercept=not isMMV and C("fireflyProtectIntercept",false)==true,
-    block=not isMMV and C("fireflyProtectBlock",false)==true,
     ring=C("fireflyProtectRing",not isMMV and C("fireflyProtectShuffle",false)==true)==true,
     mouse=C("fireflyProtectMouse",false)==true,
     autoJar=C("fireflyProtectAutoJar",false)==true,
@@ -19464,15 +19463,15 @@ local settings={
 }
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
-local MMV_GRID={rows=5,columns=5,spacing=0.55,distance=1.8}   -- the original MMV shield
+-- MMV's Gun Shield, from the original script: spacing, distance off your back and height
+-- as there (SHIELD_SPACING 0.35, SHIELD_DISTANCE 1.8, SHIELD_HEIGHT 0); 7 x 7 instead of
+-- 5 x 5 to cover your whole torso
+local SHIELD={rows=7,columns=7,spacing=0.35,distance=1.8,height=0}
 local MMV_FAR=80            -- a gun holder behind a wall this far away: just the ring aura
 local MAX_FIREFLIES=90
 local NEAR=40               -- a murderer this close is shielded against even behind a wall
 local RANGE=200             -- further than this an attacker isn't a danger yet
 local MOUSE_RANGE=50        -- how far from you the mouse swarm may go
-local BLOCK_RADIUS=4.5      -- Block Murderer: how far out from the murderer
-local BLOCK_RIGHT=math.rad(35)   -- ...centred this far round to their right (their knife hand)
-local BLOCK_NEAR=100        -- Block Murderer works with the murderer this close (or in sight)
 local LIFT=Vector3.new(0,0.6,0)
 local MARK="VisualsV2_Firefly"
 local fireflies={}
@@ -19480,12 +19479,13 @@ local list={}
 local loop,placeLoop,watchAdded,watchRemoved,autoLoop
 local knives={}
 local smoothDirection=nil
-local murdererFacing={}
+local bodySide=nil
 local murdererNotice=-math.huge
 local diagnostics={fireflies=0,owned=0,threat="none",mode="idle",active=false,intercepts=0,jarUses=0,jarAttempts=0,skippedSlots=0,knivesDone=0}
 
-local function guarding() return settings.protectOther and (settings.protectShield or settings.protectIntercept) end
-local function protecting() return settings.shield or settings.intercept or settings.block or settings.ring or settings.mouse or guarding() end
+-- (MMV: just the toggle, the Gun Shield's the only way)
+local function guarding() return settings.protectOther and (isMMV or settings.protectShield or settings.protectIntercept) end
+local function protecting() return settings.shield or settings.intercept or settings.ring or settings.mouse or guarding() end
 local function active() return protecting() or settings.autoJar end
 local function owned(part)
     local ok,age=pcall(function() return part.ReceiveAge end)
@@ -19521,6 +19521,7 @@ end
 -- seconds, so nothing waits on it)
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local roundMurderer,roundCheckedAt,roundChecking=false,-math.huge,false
+local roundData=nil
 local function refreshRound()
     if isMMV or roundChecking or os.clock()-roundCheckedAt<3 then return end
     roundChecking=true
@@ -19530,6 +19531,7 @@ local function refreshRound()
             if remote and remote:IsA("RemoteFunction") then return remote:InvokeServer() end
         end)
         if ok and type(data)=="table" then
+            roundData=data
             local mine=data[LocalPlayer.Name]
             roundMurderer=type(mine)=="table" and mine.Role=="Murderer" and not mine.Dead and not mine.Killed or false
         end
@@ -19554,13 +19556,22 @@ local function attackers(root,except)
     table.sort(found,function(a,b) return a.distance<b.distance end)
     return found
 end
--- Protect Other Player: the player picked, while they're alive
-local function guardTarget()
+-- Protect Other Player: the player picked, while they're alive and in the round with you.
+-- The moment they die (or are out of this round, back in the lobby, or have left), it's
+-- you that's protected again.
+local GUARD_RANGE=250
+local function guardTarget(me)
     if not guarding() or settings.targetName=="" then return nil end
     local plr=Players:FindFirstChild(settings.targetName)
     if not plr or plr==LocalPlayer or not plr:IsA("Player") then return nil end
     local root=aliveRoot(plr)
-    if root then return plr,root end
+    if not root then return nil end
+    -- (MM2's round data: killed this round, even once they're standing in the lobby again)
+    local entry=type(roundData)=="table" and roundData[plr.Name]
+    if type(entry)=="table" and (entry.Dead or entry.Killed) then return nil end
+    -- (somewhere else entirely, like the lobby while you're in the round)
+    if me and (root.Position-me.Position).Magnitude>GUARD_RANGE then return nil end
+    return plr,root
 end
 local function clutchBusy()
     local clutch=runtime.FireflyClutch
@@ -20042,40 +20053,33 @@ local function ringSpots(count,radius,heights,spin,lookYaw,gap)
     end
     return spots
 end
--- MMV: the original shield's 5 x 5 grid, 0.55 apart, 1.8 studs out on the side facing
--- the gun holder (middle spots first, so a few fireflies cover your torso), the grid at
--- right angles to the way the shot would come (tilted up or down), each firefly buzzing
--- about its spot the way the original's did
-local function mmvShieldSpots(count,facing,time)
-    local cells={}
-    local width=(MMV_GRID.columns-1)*MMV_GRID.spacing
-    local height=(MMV_GRID.rows-1)*MMV_GRID.spacing
-    for row=0,MMV_GRID.rows-1 do
-        for column=0,MMV_GRID.columns-1 do
-            cells[#cells+1]=Vector3.new(column*MMV_GRID.spacing-width/2,row*MMV_GRID.spacing-height/2,0)
+-- MMV: the original shield's square grid (getShieldPositions): behind you along -LookVector
+-- (or in front, side=1), across your RightVector and UpVector, so it turns and leans with
+-- your body. Filled from the middle out; past a full grid, the next ones go on your other
+-- side. (Offsets from your middle, LIFT up.)
+local shieldCells=nil
+local function shieldSpots(count,frame,side,time)
+    if not shieldCells then
+        shieldCells={}
+        local width=(SHIELD.columns-1)*SHIELD.spacing
+        local height=(SHIELD.rows-1)*SHIELD.spacing
+        for row=0,SHIELD.rows-1 do
+            for column=0,SHIELD.columns-1 do
+                shieldCells[#shieldCells+1]=Vector2.new(column*SHIELD.spacing-width/2,row*SHIELD.spacing-height/2+SHIELD.height)
+            end
         end
+        table.sort(shieldCells,function(a,b) return a.Magnitude<b.Magnitude end)
     end
-    table.sort(cells,function(a,b) return a.Magnitude<b.Magnitude end)
-    local right=facing:Cross(Vector3.yAxis)
-    right=right.Magnitude>0.01 and right.Unit or Vector3.xAxis
-    local up=right:Cross(facing).Unit
+    local look,right,up=frame.LookVector,frame.RightVector,frame.UpVector
     local spots={}
     for index=1,count do
-        local cell=cells[(index-1)%#cells+1]
-        local layer=math.floor((index-1)/#cells)
-        local jiggle=Vector3.new(math.sin(time*7+index*1.7),math.cos(time*6.3+index*2.3),math.sin(time*5.1+index*0.9))*0.1
-        spots[#spots+1]=facing*(MMV_GRID.distance+layer*0.3)+right*cell.X+up*cell.Y+jiggle
+        local cell=shieldCells[(index-1)%#shieldCells+1]
+        local pass=math.floor((index-1)/#shieldCells)
+        local towards=(pass%2==0) and side or -side
+        local jiggle=Vector3.new(math.sin(time*7+index*1.7),math.cos(time*6.3+index*2.3),math.sin(time*5.1+index*0.9))*0.03
+        spots[#spots+1]=look*towards*(SHIELD.distance+math.floor(pass/2)*0.3)+right*cell.X+up*cell.Y-LIFT+jiggle
     end
     return spots
-end
--- the gun holder's side of you, snapped to one of eight: front, back, left, right and the
--- four corners (measured from the way you face)
-local function eightSides(direction,look)
-    local lookYaw=math.atan2(-look.X,-look.Z)
-    local yaw=math.atan2(-direction.X,-direction.Z)
-    local quarter=math.pi/4
-    local snapped=lookYaw+math.floor((yaw-lookYaw)/quarter+0.5)*quarter
-    return Vector3.new(-math.sin(snapped),0,-math.cos(snapped))
 end
 -- Follow Mouse follows only where you point on purpose: a tap on the screen, a finger held
 -- still on it, or the mouse clicked / held and dragged. A finger that moves off at once is
@@ -20135,6 +20139,10 @@ local function watchPointer()
         end
     end)
 end
+-- (danger: the spot you tapped is forgotten, so the fireflies don't go back to it after)
+local function cancelPointer()
+    pointer.lastWorld=nil;pointer.pendingTap=nil;pointer.lastAt=-math.huge
+end
 local function unwatchPointer()
     for _,connection in ipairs(pointer.connections) do pcall(function() connection:Disconnect() end) end
     table.clear(pointer.connections);table.clear(pointer.touches)
@@ -20188,23 +20196,6 @@ local function swarmSpots(count,point,center,time)
         local radius=0.6+0.35*math.sin(time*2.6+index)
         local height=math.sin(time*1.7+index*1.3)*0.7
         spots[#spots+1]=point+Vector3.new(math.cos(angle)*radius,height,math.sin(angle)*radius)-center
-    end
-    return spots
-end
--- Block Murderer: a wall well out from the murderer, round their front and right side (the
--- knife hand), chest to head high (offsets from the murderer)
-local function blockSpots(count,facing)
-    local yaw=math.atan2(-facing.X,-facing.Z)-BLOCK_RIGHT
-    local rows={1.1,0.5,-0.1,1.7}
-    local spots={}
-    local perRow=math.max(1,math.ceil(count/#rows))
-    for index=1,count do
-        local row=(index-1)%#rows+1
-        local column=math.floor((index-1)/#rows)
-        local spread=perRow>1 and (column/(perRow-1)-0.5)*math.rad(130) or 0
-        local angle=yaw+spread
-        local radius=BLOCK_RADIUS+(row==4 and -0.6 or 0)
-        spots[#spots+1]=Vector3.new(-math.sin(angle)*radius,rows[row],-math.cos(angle)*radius)
     end
     return spots
 end
@@ -20273,7 +20264,8 @@ local function clusterSpots(threat,center,count)
     side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
     local up=side:Cross(direction).Unit
     local spots={impact}
-    local rings={{0.35,6},{0.7,12},{1.05,18}}
+    -- (a little spread out, so a knife a bit off its line still meets them)
+    local rings={{0.45,6},{0.9,12},{1.35,18}}
     for _,ring in ipairs(rings) do
         for index=1,ring[2] do
             local angle=(index/ring[2])*2*math.pi
@@ -20282,7 +20274,7 @@ local function clusterSpots(threat,center,count)
     end
     local back=1
     while #spots<count do
-        spots[#spots+1]=impact-direction*back*0.7
+        spots[#spots+1]=impact-direction*back*0.8
         back=back+1
     end
     return spots,impact
@@ -20337,11 +20329,18 @@ local function step(dt)
     if clutchBusy() then diagnostics.threat="Firefly Clutch is using them";diagnostics.mode="clutch";letGo();return end
     -- whose body is protected: yours, or the player picked in Protect Other Player (then in
     -- their way instead of your own modes)
-    local guardPlayer,guardRoot=guardTarget()
+    local guardPlayer,guardRoot=guardTarget(me)
     local root=guardRoot or me
     local mode
-    if guardRoot then mode={shield=settings.protectShield,intercept=not isMMV and settings.protectIntercept,block=false}
-    else mode={shield=settings.shield,intercept=settings.intercept,block=not isMMV and settings.block} end
+    if guardRoot then mode={shield=isMMV or settings.protectShield,intercept=not isMMV and settings.protectIntercept}
+    else
+        mode={shield=settings.shield,intercept=settings.intercept}
+        -- (the player you protect has died or is gone: you, the same way, unless one of your
+        -- own modes is on)
+        if guarding() and not (mode.shield or mode.intercept) then
+            mode={shield=isMMV or settings.protectShield,intercept=not isMMV and settings.protectIntercept}
+        end
+    end
     diagnostics.guarding=guardPlayer and guardPlayer.Name or nil
     local threats=attackers(root,guardPlayer)
     local mineKnife=not isMMV and not guardRoot and iHaveKnife()
@@ -20378,19 +20377,18 @@ local function step(dt)
         if best then targets[best]=point;solid[best]=true;table.remove(free,bestIndex) end
         return best
     end
-    -- (who's in sight or near: MM2's three modes only need the fireflies then; behind a
-    -- wall and further away they're free for Follow Mouse)
+    -- (who's in sight or near: MM2's modes only need the fireflies then; behind a wall and
+    -- further away they're free for Follow Mouse)
     for _,threat in ipairs(near) do
         threat.seen=clear(center,threat.root.Position+Vector3.new(0,1,0))
     end
-    local close,closeBlock={},{}
+    local close={}
     if not isMMV then
         for _,threat in ipairs(near) do
             if threat.seen or threat.distance<=NEAR then close[#close+1]=threat end
-            if threat.seen or threat.distance<=BLOCK_NEAR then closeBlock[#closeBlock+1]=threat end
         end
     end
-    local needed=mode.block and #closeBlock>0 or #close>0
+    local needed=#close>0
     -- thrown knives first
     local kind=nil
     local active=false
@@ -20428,64 +20426,20 @@ local function step(dt)
         diagnostics.intercepts=diagnostics.intercepts+1
     end
 
-    -- (Follow Mouse: only while you point, and Knife Interception keeps them round you,
-    -- ready, while a murderer is in sight or near)
-    local pointAt=nil
-    if settings.mouse and not (mode.intercept and needed) then pointAt=pointerWorld(center) end
-    -- Block Murderer (murderer within 100 studs or in sight): a knife they've just thrown
-    -- gets fireflies put across its path just ahead of it; the rest wait in a wall round the
-    -- murderer's front and right side, held to them
-    if mode.block and #closeBlock>0 and #free>0 then
-        local murdererSet={}
-        for _,threat in ipairs(closeBlock) do murdererSet[threat]=threat.root.Position end
-        local chased=0
-        for _,record in pairs(knives) do
-            if record.flying and record.direction and record.position and chased<2 and #free>0 then
-                local fromMurderer=math.huge
-                for _,threat in ipairs(closeBlock) do
-                    fromMurderer=math.min(fromMurderer,(record.position-threat.root.Position).Magnitude)
-                end
-                -- (a knife just out of their hand, still on its way)
-                if fromMurderer<45 then
-                    chased=chased+1
-                    local direction=record.direction
-                    local side=direction:Cross(Vector3.yAxis)
-                    side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
-                    local up=side:Cross(direction).Unit
-                    for n=1,math.min(10,#free) do
-                        local ahead=1.5+math.floor((n-1)/5)*1.2
-                        local ring=(n-1)%5
-                        local offset=ring==0 and Vector3.zero or (ring==1 and side*0.45 or ring==2 and -side*0.45 or ring==3 and up*0.45 or -up*0.45)
-                        take(record.position+direction*ahead+offset)
-                    end
-                end
-            end
-        end
-        if chased>0 then kind="blocking a knife at the murderer";diagnostics.intercepts=diagnostics.intercepts+1 end
-        local blockers=math.min(#closeBlock,2)
-        local per=math.ceil(#free/blockers)
-        for index=1,blockers do
-            local murderer=closeBlock[index]
-            local share={}
-            while #share<per and #free>0 do share[#share+1]=table.remove(free,1) end
-            local look=flat(murderer.root.CFrame.LookVector) or flat(root.Position-murderer.root.Position) or Vector3.new(0,0,-1)
-            local smoothed=murdererFacing[murderer.player]
-            smoothed=smoothed and smoothed:Lerp(look,math.clamp(FOLLOW*dt,0,1)) or look
-            if smoothed.Magnitude<0.01 then smoothed=look end
-            smoothed=smoothed.Unit
-            murdererFacing[murderer.player]=smoothed
-            local mcenter=murderer.root.Position+LIFT
-            local spots=blockSpots(#share,smoothed)
-            for slot,part in ipairs(share) do
-                local point=spots[slot] and mcenter+spots[slot] or mcenter
-                if not clear(mcenter,point) then point=inFront(mcenter,point) end
-                targets[part]=point;anchorOf[part]=murderer.root;solid[part]=true
-            end
-        end
-        kind=kind or ("blocking "..closeBlock[1].player.Name)
-        active=true
+    -- (Follow Mouse: only while you point, and never while they're needed to defend: an
+    -- attacker in sight or near, or a knife on its way, takes them back at once, and the
+    -- spot you tapped is forgotten, so afterwards it's the ring aura, not that spot)
+    local defending=watchKnives and #knivesComing>0
+    if isMMV then
+        local gunHolder=mode.shield and near[1]
+        defending=defending or (gunHolder~=nil and gunHolder~=false and (gunHolder.seen or gunHolder.distance<MMV_FAR))
+    else
+        defending=defending or ((mode.shield or mode.intercept) and #close>0)
     end
-
+    diagnostics.defending=defending
+    local pointAt=nil
+    if defending then cancelPointer()
+    elseif settings.mouse then pointAt=pointerWorld(center) end
     -- the rest: the formation for the situation
     local spots=nil
     local grid=false
@@ -20513,17 +20467,18 @@ local function step(dt)
             if gunHolder then
                 local aim=gunHolder.root.Position+Vector3.new(0,1.5,0)
                 if gunHolder.seen or gunHolder.distance<MMV_FAR then
-                    -- the shield on their side of you (one of eight), tilted to where they are
-                    local direction=aim-center
-                    local horizontal=eightSides(flat(direction) or root.CFrame.LookVector,flat(root.CFrame.LookVector) or Vector3.new(0,0,-1))
-                    local pitch=math.clamp(math.atan2(direction.Y,Vector3.new(direction.X,0,direction.Z).Magnitude),math.rad(-60),math.rad(60))
-                    local facing=(horizontal*math.cos(pitch)+Vector3.new(0,math.sin(pitch),0)).Unit
-                    smoothDirection=smoothDirection and smoothDirection:Lerp(facing,math.clamp(FOLLOW*dt,0,1)) or facing
-                    if smoothDirection.Magnitude<0.01 then smoothDirection=facing end
-                    spots=mmvShieldSpots(count,smoothDirection.Unit,clock)
+                    -- the original's grid on your back, or on your front: whichever faces
+                    -- them (it only flips once they're clearly on the other side)
+                    local look=flat(root.CFrame.LookVector) or Vector3.new(0,0,-1)
+                    local toThem=flat(aim-center) or look
+                    local dot=look:Dot(toThem)
+                    if not bodySide then bodySide=dot>=0 and 1 or -1
+                    elseif bodySide==1 and dot<-0.15 then bodySide=-1
+                    elseif bodySide==-1 and dot>0.15 then bodySide=1 end
+                    spots=shieldSpots(count,root.CFrame,bodySide,clock)
                     grid=true
                     active=true
-                    kind=kind or ("shielding from "..gunHolder.player.Name)
+                    kind=kind or ("shielding from "..gunHolder.player.Name..(bodySide==1 and " (front)" or " (back)"))
                 elseif pointAt then
                     -- (hidden and far: not needed, so Follow Mouse while you point)
                     spots=idle(settings.ringDistance,settings.ringSpeed*0.6,"ring aura")
@@ -20536,9 +20491,6 @@ local function step(dt)
             else
                 spots=idle(settings.ringDistance,settings.ringSpeed*0.6,"ring aura")
             end
-        elseif mode.block and #near>0 and #closeBlock==0 and not pointAt then
-            -- Block Murderer with the murderer hidden and far: round you
-            spots=roundYou()
         elseif mode.shield and #near>0 and (needed or not pointAt) then
             local murderer=near[1]
             active=true
@@ -20576,7 +20528,7 @@ local function step(dt)
     end
     kind=kind or "idle"
     if guardPlayer then kind=kind.." (protecting "..guardPlayer.Name..")" end
-    if not grid then smoothDirection=nil end
+    if not grid then smoothDirection=nil;bodySide=nil end
     diagnostics.threat=kind;diagnostics.mode=kind;diagnostics.active=active
     if spots then
         local points={}
@@ -20589,8 +20541,9 @@ local function step(dt)
         elseif not swarm then
             points=usable(center,points,count)
         end
-        -- (swapping places now and then: MM2's grid with the ring aura on, MMV's shield)
-        local order=grid and (isMMV or settings.ring) and shuffled(#free) or nil
+        -- (swapping places now and then: MM2's grid with the ring aura on; MMV's shield keeps
+        -- every firefly on its own spot, as in the original)
+        local order=grid and not isMMV and settings.ring and shuffled(#free) or nil
         for index,part in ipairs(free) do
             local slot=order and order[index] or index
             local point=points[(slot-1)%#points+1]
@@ -20617,11 +20570,10 @@ local function step(dt)
         end
     end
     for _,part in ipairs(list) do setBlocking(part,solid[part]==true) end
-    -- Each firefly keeps a place relative to what it's held to (the one protected; for Block
-    -- Murderer the murderer) that only glides when the formation changes, so moving about
-    -- carries them along at once with nothing trailing behind. (One on a knife's path stays
-    -- put in the world instead.) They carry the speed of what they're held to as well, so
-    -- for everyone else they move along between updates too.
+    -- Each firefly keeps a place relative to the one protected that only glides when the
+    -- formation changes, so moving about carries them along at once with nothing trailing
+    -- behind. (One on a knife's path stays put in the world instead.) They carry that
+    -- player's speed as well, so for everyone else they move along between updates too.
     local alpha=math.clamp(1-math.exp(-dt*18),0,1)
     for part,target in pairs(targets) do
         pcall(function()
@@ -20686,7 +20638,14 @@ local function refreshClutchTimer()
 end
 local function statusText()
     if not active() then return "Off" end
-    return string.format("Fireflies: %d | %s",diagnostics.fireflies,diagnostics.active and "Active" or "Idle")
+    local text=string.format("Fireflies: %d | %s",diagnostics.fireflies,diagnostics.active and "Active" or "Idle")
+    -- (protecting someone else: Roblox hands a part to whichever player it's nearest, so
+    -- fireflies at their body can become theirs to move; those only show on your screen)
+    local mineCount=tonumber(diagnostics.owned) or 0
+    if diagnostics.guarding and mineCount<diagnostics.fireflies then
+        text=text..string.format(" | %d only on your screen",diagnostics.fireflies-mineCount)
+    end
+    return text
 end
 local function stopWatching()
     if loop then loop:Disconnect();loop=nil end
@@ -20753,7 +20712,6 @@ local function stop()
         if saved and part.Parent then pcall(function() part.CanCollide=saved.collide end) end
     end
     smoothDirection=nil
-    table.clear(murdererFacing)
     for part in pairs(caps) do forgetCap(part) end
     if status then pcall(function() status:SetValue("Off") end) end
 end
@@ -20762,7 +20720,7 @@ end
 local function jarNeeded(root)
     if #list>=MAX_FIREFLIES then return false end
     if settings.ring or settings.mouse then return true end
-    local guardPlayer,guardRoot=guardTarget()
+    local guardPlayer,guardRoot=guardTarget(root)
     for _,threat in ipairs(attackers(guardRoot or root,guardPlayer)) do
         if threat.distance<=RANGE then return true end
     end
@@ -20810,11 +20768,11 @@ local function refresh()
     end
 end
 local controls={}
-local KEYS={shield="fireflyProtectShield",intercept="fireflyProtectIntercept",block="fireflyProtectBlock",
+local KEYS={shield="fireflyProtectShield",intercept="fireflyProtectIntercept",
     ring="fireflyProtectRing",mouse="fireflyProtectMouse",autoJar="fireflyProtectAutoJar",
     protectOther="fireflyProtectOther",protectIntercept="fireflyProtectOtherIntercept",protectShield="fireflyProtectOtherShield"}
 -- (one of each group at a time: turning one on turns the one that was on off)
-local GROUPS=isMMV and {} or {{"shield","intercept","block"},{"protectIntercept","protectShield"}}
+local GROUPS=isMMV and {} or {{"shield","intercept"},{"protectIntercept","protectShield"}}
 local function groupOf(field)
     for _,group in ipairs(GROUPS) do if table.find(group,field) then return group end end
 end
@@ -20860,9 +20818,8 @@ if isMMV then
 else
     add("Knife Shield","shield")
     add("Knife Interception","intercept")
-    add("Block Murderer","block")
     pcall(function()
-        section:AddParagraph("Only One At A Time","You can only use one of three functions at a time. Turning one on will disable the previously enabled function.")
+        section:AddParagraph("Only One At A Time","You can only use one of two functions at a time. Turning one on will disable the previously enabled function.")
     end)
     pcall(function() section:AddLabel("Firefly Options") end)
     add("Firefly Ring Aura","ring")
@@ -20892,16 +20849,14 @@ pcall(function()
         pcall(shared.Notify,"Firefly Protection: protecting "..plr.Name,2)
     end)
 end)
-if isMMV then
-    add("Protect With Gun Shield","protectShield")
-else
+if not isMMV then
     add("Protect With Knife Interception","protectIntercept")
     add("Protect With Knife Shield","protectShield")
 end
 runtime.FireflyProtection={
     Active=active,
     DisableAll=function()
-        for _,field in ipairs({"shield","intercept","block","ring","mouse","autoJar","protectOther","protectIntercept","protectShield"}) do
+        for _,field in ipairs({"shield","intercept","ring","mouse","autoJar","protectOther","protectIntercept","protectShield"}) do
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
@@ -20926,7 +20881,7 @@ local respawn=LocalPlayer.CharacterAdded:Connect(function()
 end)
 runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
-    settings.shield,settings.intercept,settings.block,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false,false
+    settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
     settings.distance,settings.ringDistance,settings.ringSpeed=2.2,3,3
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
