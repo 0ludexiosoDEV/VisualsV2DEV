@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-49"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-50"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -11865,7 +11865,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-49",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-22-fixes-50",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -20719,7 +20719,8 @@ end)()
 --    line: solid for the game and far bigger than a firefly (on your screen never solid, so
 --    it can't push you). As the MM2 murderer (protection paused) it's left alone, so Bomb
 --    Jump works then, like Firefly Clutch. (Found when thrown by what it is: the toy's own
---    Handle copied out into the map, the same size, with its sounds.)
+--    Handle copied out into the map, the same size, with its sounds.) Fake Bomb Spin Speed
+--    (1 to 5 turns a second) is how fast it turns while it idles with the fireflies.
 --  * In the lobby, or dead, with no attacker within 200 studs: just the ring aura (or the
 --    mouse swarm).
 --  * Firefly Clutch is off (its timer says DISABLED) while protection is working.
@@ -20812,6 +20813,9 @@ local settings={
     ringDistance=math.clamp(tonumber(MMV_OWN.read("ringDistance")) or MMV_OWN.default("ringDistance"),1,8),
     ringSpeed=math.clamp(tonumber(MMV_OWN.read("ringSpeed")) or MMV_OWN.default("ringSpeed"),0,10),
     shieldDistance=isMMV and MMV_OWN.shieldDistance() or 2,
+    -- (Fake Bomb Spin Speed: how fast the Fake Bomb turns while it idles with the fireflies,
+    -- in turns a second, 1 to 5; each game its own)
+    bombSpin=math.clamp(tonumber(C(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",1)) or 1,1,5),
 }
 settings.shieldGap=settings.shieldDistance-2
 do
@@ -22083,7 +22087,7 @@ local BOMB_SPIN=Vector3.new(5.2,2.3,3.9)
 -- its speed, the way a thrown bomb moves, at most 30 studs a second faster than you, turning
 -- over as it goes; and only while it's yours. (Bomb Fling still moves it its own way.)
 local BOMB_GLIDE=30
-local function glideBomb(part,target,anchor,dt)
+local function glideBomb(part,target,anchor,dt,turnSpeed)
     if not owned(part) then return end
     local velocity=(target-part.Position)*12
     if velocity.Magnitude>BOMB_GLIDE then velocity=velocity.Unit*BOMB_GLIDE end
@@ -22094,7 +22098,7 @@ local function glideBomb(part,target,anchor,dt)
     -- (as fast as ever, but the way it turns keeps changing, so it flips forward and sideways,
     -- both ways round)
     local axis=Vector3.new(BOMB_SPIN.X*math.cos(clock*2.4),BOMB_SPIN.Y+2.6*math.sin(clock*1.7),BOMB_SPIN.Z*math.sin(clock*2.4+1))
-    part.AssemblyAngularVelocity=(axis.Magnitude>0.1 and axis.Unit or BOMB_SPIN.Unit)*BOMB_SPIN.Magnitude
+    part.AssemblyAngularVelocity=(axis.Magnitude>0.1 and axis.Unit or BOMB_SPIN.Unit)*(turnSpeed or BOMB_SPIN.Magnitude)
 end
 -- Protecting someone else: the game hands a loose part to whoever is nearest it, so fireflies
 -- over by them can become theirs to move. While they're there, your client asks the game to
@@ -22612,8 +22616,9 @@ local function step(dt)
     for part,target in pairs(targets) do
         pcall(function()
             local anchor=anchorOf[part] or root
-            -- (the Fake Bomb: steered there by its speed, never put there)
-            if part==bomb then glideBomb(part,target,anchor,dt);return end
+            -- (the Fake Bomb: steered there by its speed, never put there; idling with the
+            -- fireflies it turns as fast as Fake Bomb Spin Speed says)
+            if part==bomb then glideBomb(part,target,anchor,dt,orbit and settings.bombSpin*2*math.pi or nil);return end
             local base=anchor.Position+LIFT
             local wanted=target-base
             local current=offsets[part]
@@ -23204,6 +23209,11 @@ else
         settings.blockScale=scale;SetCfg("fireflyBlockScale",scale)
     end)
 end
+-- (how fast the Fake Bomb turns while it idles with the fireflies: 1 to 5 turns a second)
+section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
+    settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
+    SetCfg(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",settings.bombSpin)
+end)
 -- Protect Select User: the player picked is the priority (you while nobody is after them)
 pcall(function() section:AddLabel("Protect Select User") end)
 add("Protect Select User","protectOther")
@@ -23257,6 +23267,7 @@ runtime.RegisterReset(function()
     releaseBomb()
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
     settings.distance,settings.interceptStuds,settings.blockScale=2.2,INTERCEPT_STUDS,1
+    settings.bombSpin=1
     settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
     settings.shieldDistance,settings.shieldGap=2,0
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
@@ -24343,13 +24354,49 @@ local lastReferenceRescan=-math.huge
 -- (none of the chosen toys' hotbar slots can be told apart at all: there's nothing to put in
 -- order, so it's no reason to wait, and the hotbar is only looked through again now and then)
 local orderUnavailable=false
+-- (whether a slot put in order still holds that toy: by the value in it, or for MM2's own
+-- hotbar by the toy's picture in it)
+local function holdsStill(slot,desired)
+    if desired.kind=="picture" then
+        local icon=desired.icon
+        return icon.Parent~=nil and icon:IsDescendantOf(slot) and icon.Image==desired.picture
+    end
+    return desired.reference.Parent==slot and desired.reference.Value==desired.tool
+end
+-- MM2's own hotbar (PlayerGui.BackpackUI, a BackpackItem for each tool): nothing in a slot
+-- says which tool it holds, but each shows its tool's picture (its ToolIcon), so a chosen
+-- toy's slot is the one with its picture. (Two chosen toys with the same picture: can't tell.)
+local function pictureSlots(order)
+    local gui=observedGui
+    local ui=gui and gui:FindFirstChild("BackpackUI")
+    local frame=ui and (ui:FindFirstChild("BackpackFrame") or ui:FindFirstChild("BackpackFrame",true))
+    if not frame then return nil end
+    local byPicture={}
+    for tool in pairs(order) do
+        local ok,picture=pcall(function() return tool.TextureId end)
+        if not ok or type(picture)~="string" or picture=="" or byPicture[picture] then return nil end
+        byPicture[picture]=tool
+    end
+    local found,seen={},{}
+    for _,item in ipairs(frame:GetChildren()) do
+        if item:IsA("GuiObject") then
+            local icon=item:FindFirstChild("ToolIcon",true)
+            local tool=icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) and byPicture[icon.Image]
+            if tool and not seen[tool] then
+                seen[tool]=true
+                found[#found+1]={slot=item,icon=icon,picture=icon.Image,tool=tool,index=order[tool]}
+            end
+        end
+    end
+    return found
+end
 local function watchSlotOrder(slot)
     if slotOrderWatch[slot] then return end
     local burstAt,burst=0,0
     slotOrderWatch[slot]=slot:GetPropertyChangedSignal("LayoutOrder"):Connect(function()
         local desired=orderedSlots[slot]
         if not desired or slot.LayoutOrder==desired.order or not autoGetTools then return end
-        if desired.reference.Parent~=slot or desired.reference.Value~=desired.tool then
+        if not holdsStill(slot,desired) then
             orderedSlots[slot]=nil;toyOrderDirty=true;requestRecovery(false);return
         end
         local now=os.clock()
@@ -24388,6 +24435,32 @@ local function orderSelectedTools(char,backpack,token)
             else
                 others[#others+1]=slot
             end
+        end
+    end
+    -- MM2's own hotbar: the chosen toys' slots found by their pictures, and put in your order
+    -- in the places those slots already have between them (nothing else on the hotbar moves;
+    -- each slot keeps its own number, so a number key still takes out the toy it shows)
+    if count==0 and wanted>0 then
+        local pictured=pictureSlots(order)
+        if pictured and #pictured>=wanted then
+            local places={}
+            for _,entry in ipairs(pictured) do places[#places+1]=entry.slot.LayoutOrder end
+            table.sort(places)
+            table.sort(pictured,function(a,b) return a.index<b.index end)
+            for position,entry in ipairs(pictured) do
+                local slot=entry.slot
+                if originalSlotOrders[slot]==nil then originalSlotOrders[slot]=slot.LayoutOrder end
+                orderedSlots[slot]={order=places[position],kind="picture",icon=entry.icon,picture=entry.picture,tool=entry.tool}
+                if slot.LayoutOrder~=places[position] then slot.LayoutOrder=places[position] end
+                watchSlotOrder(slot)
+            end
+            orderUnavailable=false
+            perf.pictureOrders=(perf.pictureOrders or 0)+1
+            return true
+        elseif pictured and #pictured>0 then
+            -- (the rest not shown yet: waited for, and it's still worth waiting for)
+            orderUnavailable=false
+            return false
         end
     end
     orderUnavailable=count==0 and wanted>0
@@ -24754,7 +24827,9 @@ local function watchPlayerGui(gui)
             for _,slot in ipairs(child.Parent:GetChildren()) do
                 for _,reference in ipairs(slot:GetChildren()) do cacheReference(reference) end
             end
-        elseif child.Name=="EquipButton" or child.Name=="TouchBinding" then queueGuiRecovery(false) end
+        elseif child.Name=="EquipButton" or child.Name=="TouchBinding" then queueGuiRecovery(false)
+        -- (MM2's own hotbar: a slot made or given a tool's picture: the order looked at again)
+        elseif child.Name=="ToolIcon" or child.Name=="BackpackItem" then toyOrderDirty=true;queueGuiRecovery(false) end
     end)
 end
 
@@ -24813,7 +24888,7 @@ task.spawn(function()
                 if trade and trade.active then return end
                 local stale=false
                 for slot,desired in pairs(orderedSlots) do
-                    if not slot.Parent or desired.reference.Parent~=slot or desired.reference.Value~=desired.tool then
+                    if not slot.Parent or not holdsStill(slot,desired) then
                         orderedSlots[slot]=nil
                         stale=true
                     elseif slot.LayoutOrder~=desired.order then
