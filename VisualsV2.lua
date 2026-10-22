@@ -364,7 +364,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-37"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-38"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -4995,9 +4995,12 @@ end)()
 
 -- Big buttons (Speed Glitch, Trick Shoot): ODH's big-button design from the add-on
 -- template (white, 90% see-through, Jura text, rounded corners and the turning gradient
--- outline). Their size can be changed, and Miscellaneous can give all big buttons a
--- 3-colour gradient of your own. Each one keeps its saved spot and follows Lock Big
--- Button POS in Miscellaneous.
+-- outline). Their size can be changed. All the add-on's buttons (big ones and bind ones)
+-- take their gradient from the UI customization picked in ODH's Settings (its 3 Secondary
+-- colours; bind buttons switched off show its Secondary Variant), unless Miscellaneous'
+-- Custom Big Button Gradient gives them a 3-colour gradient of your own. Each big button
+-- keeps its saved spot and follows Lock Big Button POS in Miscellaneous. Each section's
+-- Hide Button Text hides the words on its buttons.
 ;(function()
 local runtime=env.VisualsV2Runtime
 local GRADIENT=ColorSequence.new({
@@ -5026,17 +5029,202 @@ function style.Custom()
         ColorSequenceKeypoint.new(1,style.colors[3]),
     })
 end
--- the sequence a button shows: the custom one when it's on, else the button's usual one
-function style.Sequence(default) return style.enabled and style.Custom() or default or GRADIENT end
+-- ODH's Settings: the UI customization picked there (its files are in the executor's
+-- workspace, Ixry Shizuka/customs/ui_customizations). Which one is picked is read off ODH's
+-- own menu: the customization whose colours it is showing.
+style.settings={secondary=nil,variant=nil,name=nil}
+style.listeners={}
+local THEME_FOLDER="Ixry Shizuka/customs/ui_customizations"
+local HttpService=game:GetService("HttpService")
+local function hexColor(value)
+    if type(value)~="string" then return nil end
+    local hex=value:match("^%s*#?(%x%x%x%x%x%x)%s*$")
+    if not hex then return nil end
+    return Color3.fromRGB(tonumber(hex:sub(1,2),16),tonumber(hex:sub(3,4),16),tonumber(hex:sub(5,6),16)),hex:upper()
+end
+local function hexOf(color)
+    return string.format("%02X%02X%02X",math.floor(color.R*255+0.5),math.floor(color.G*255+0.5),math.floor(color.B*255+0.5))
+end
+-- a group's colours in their order ("#1. ...", "#2. ...", "#3. ...")
+local function orderedColors(group)
+    if type(group)~="table" then return nil end
+    local list={}
+    for key,value in pairs(group) do
+        local color=hexColor(value)
+        if color then
+            local index=tonumber(tostring(key):match("^%s*#?%s*(%d+)")) or 99
+            list[#list+1]={index=index,key=tostring(key),color=color}
+        end
+    end
+    if #list<2 then return nil end
+    table.sort(list,function(a,b) if a.index~=b.index then return a.index<b.index end return a.key<b.key end)
+    local colors={}
+    for index,entry in ipairs(list) do colors[index]=entry.color end
+    return colors
+end
+local function sequenceOf(colors)
+    if not colors or #colors<2 then return nil end
+    local points={}
+    for index,color in ipairs(colors) do points[#points+1]=ColorSequenceKeypoint.new((index-1)/(#colors-1),color) end
+    return ColorSequence.new(points)
+end
+local function groupNamed(data,wanted)
+    for key,value in pairs(data) do
+        if type(key)=="string" and key:lower():gsub("[^%a]","")==wanted then return value end
+    end
+end
+local function readThemes()
+    local list={}
+    local listFiles=type(listfiles)=="function" and listfiles or env.listfiles
+    local readFile=type(readfile)=="function" and readfile or env.readfile
+    if type(listFiles)~="function" or type(readFile)~="function" then return list end
+    local ok,files=pcall(listFiles,THEME_FOLDER)
+    if not ok or type(files)~="table" then return list end
+    for _,path in ipairs(files) do
+        if type(path)=="string" and path:lower():sub(-5)==".json" then
+            local okRead,text=pcall(readFile,path)
+            if okRead and type(text)=="string" and #text<200000 then
+                local okJson,data=pcall(function() return HttpService:JSONDecode(text) end)
+                if okJson and type(data)=="table" then
+                    local entry={name=path:match("([^/\\]+)%.[Jj][Ss][Oo][Nn]$") or path,data=data,colors={}}
+                    entry.secondary=orderedColors(groupNamed(data,"secondary"))
+                    entry.variant=orderedColors(groupNamed(data,"secondaryvariant"))
+                    for _,group in pairs(data) do
+                        if type(group)=="table" then
+                            for _,value in pairs(group) do
+                                local _,hex=hexColor(value)
+                                if hex then entry.colors[hex]=true end
+                            end
+                        end
+                    end
+                    if entry.secondary then list[#list+1]=entry end
+                end
+            end
+        end
+    end
+    return list
+end
+-- every colour ODH's menu shows right now (not the add-on's own buttons)
+local OUR_PREFIXES={"visualsv2","vv2_"}
+local function ours(name)
+    name=name:lower()
+    for _,prefix in ipairs(OUR_PREFIXES) do if name:sub(1,#prefix)==prefix then return true end end
+    return false
+end
+local function menuColors()
+    local seen,found={},false
+    local budget=8000
+    local roots={}
+    local hidden=type(gethui)=="function" and gethui or env.gethui
+    if type(hidden)=="function" then local ok,root=pcall(hidden);if ok and typeof(root)=="Instance" then roots[#roots+1]=root end end
+    pcall(function() roots[#roots+1]=game:GetService("CoreGui") end)
+    local function add(color) if typeof(color)=="Color3" then seen[hexOf(color)]=true end end
+    for _,root in ipairs(roots) do
+        local okChildren,children=pcall(function() return root:GetChildren() end)
+        for _,gui in ipairs(okChildren and children or {}) do
+            local okGui=pcall(function()
+                -- (not the button storages: the add-on's own buttons there show the Settings
+                -- colours too, and would keep the old pick)
+                if not gui:IsA("LayerCollector") or ours(gui.Name) or gui.Name:sub(1,6)=="Roblox"
+                    or gui.Name=="@BBStorage" or gui.Name=="@bindstorage" then return end
+                for _,object in ipairs(gui:GetDescendants()) do
+                    budget=budget-1
+                    if budget<=0 then break end
+                    if not ours(object.Name) then
+                        if object:IsA("GuiObject") then
+                            found=true
+                            add(object.BackgroundColor3)
+                            if object:IsA("ImageLabel") or object:IsA("ImageButton") then add(object.ImageColor3) end
+                        elseif object:IsA("UIStroke") then add(object.Color)
+                        elseif object:IsA("UIGradient") then
+                            for _,point in ipairs(object.Color.Keypoints) do add(point.Value) end
+                        end
+                    end
+                end
+            end)
+            if budget<=0 then break end
+        end
+    end
+    return seen,found
+end
+style.themeDiagnostics={}
+local function pickTheme(themes)
+    style.themeDiagnostics={themes=#themes,scores={}}
+    if #themes==0 then return nil end
+    local seen,found=menuColors()
+    style.themeDiagnostics.menuFound=found
+    -- (only the colours that tell one customization from the others count)
+    local shared={}
+    for _,theme in ipairs(themes) do
+        for hex in pairs(theme.colors) do shared[hex]=(shared[hex] or 0)+1 end
+    end
+    local best,bestScore,tie=nil,0,false
+    for _,theme in ipairs(themes) do
+        local score=0
+        for hex in pairs(theme.colors) do
+            if seen[hex] and shared[hex]==1 and hex~="000000" and hex~="FFFFFF" then score=score+1 end
+        end
+        style.themeDiagnostics.scores[theme.name]=score
+        if score>bestScore then best,bestScore,tie=theme,score,false
+        elseif score==bestScore and score>0 then tie=true end
+    end
+    if best and bestScore>=2 and not tie then return best end
+    if tie and style.settings.name then
+        for _,theme in ipairs(themes) do if theme.name==style.settings.name then return theme end end
+    end
+    -- (ODH's menu couldn't be seen at all and there's only the one customization: that one)
+    if not found and #themes==1 then return themes[1] end
+    return nil
+end
+local function restyleAll()
+    for gradient,default in pairs(style.tracked) do
+        if gradient.Parent then pcall(function() gradient.Color=style.Sequence(default) end) else style.tracked[gradient]=nil end
+    end
+    for _,listener in ipairs(style.listeners) do pcall(listener) end
+end
+local function refreshTheme()
+    local ok,themes=pcall(readThemes)
+    if not ok then style.themeDiagnostics={error=tostring(themes)};return end
+    local theme=pickTheme(themes)
+    local name=theme and theme.name or nil
+    local signature=theme and table.concat({name,tostring(theme.secondary and #theme.secondary)},"|") or ""
+    for _,color in ipairs(theme and theme.secondary or {}) do signature=signature..hexOf(color) end
+    for _,color in ipairs(theme and theme.variant or {}) do signature=signature..hexOf(color) end
+    if signature==style.settings.signature then return end
+    style.settings={secondary=theme and sequenceOf(theme.secondary) or nil,variant=theme and sequenceOf(theme.variant) or nil,
+        name=name,signature=signature}
+    restyleAll()
+end
+-- (looked at again every few seconds, so changing it in Settings shows on our buttons soon)
+task.spawn(function()
+    task.wait(2)
+    while runtimeAlive do
+        pcall(refreshTheme)
+        task.wait(4)
+    end
+end)
+-- the sequence a button shows: the custom one when it's on, else the Settings one, else the
+-- button's usual one
+function style.Sequence(default)
+    if style.enabled then return style.Custom() end
+    return style.settings.secondary or default or GRADIENT
+end
+-- a bind button's: switched on (active) like a big button; switched off its usual colours,
+-- or Settings' Secondary Variant
+function style.BindSequence(active,default)
+    if active then
+        if style.enabled then return style.Custom() end
+        return style.settings.secondary or default
+    end
+    if style.enabled then return default end
+    return style.settings.variant or default
+end
+function style.OnChange(listener) if type(listener)=="function" then style.listeners[#style.listeners+1]=listener end end
 function style.Track(gradient,default)
     style.tracked[gradient]=default or GRADIENT
     pcall(function() gradient.Color=style.Sequence(default) end)
 end
-local function restyle()
-    for gradient,default in pairs(style.tracked) do
-        if gradient.Parent then pcall(function() gradient.Color=style.Sequence(default) end) else style.tracked[gradient]=nil end
-    end
-end
+local function restyle() restyleAll() end
 function style.SetEnabled(value)
     style.enabled=value==true;SetCfg("vv2BigButtonGradientEnabled",style.enabled);restyle()
 end
@@ -5050,6 +5238,53 @@ function style.Reset()
     restyle()
 end
 runtime.BigButtonStyle=style
+-- Hide Button Text (each section with buttons has one): the words on those buttons hidden,
+-- kept so when a button is rebuilt
+local textHidden={}
+local textApplied=setmetatable({}, {__mode="k"})
+local function applyText(button,hidden)
+    local alpha=hidden and 1 or 0
+    pcall(function()
+        if button:IsA("TextButton") or button:IsA("TextLabel") then button.TextTransparency=alpha end
+        local label=button:FindFirstChild("@Text")
+        if label and label:IsA("TextLabel") then label.TextTransparency=alpha end
+    end)
+end
+local function applyAllText()
+    local roots={}
+    local hidden=type(gethui)=="function" and gethui or env.gethui
+    if type(hidden)=="function" then local ok,root=pcall(hidden);if ok and typeof(root)=="Instance" then roots[#roots+1]=root end end
+    pcall(function() roots[#roots+1]=game:GetService("CoreGui") end)
+    roots[#roots+1]=LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    for _,root in ipairs(roots) do
+        pcall(function()
+            for _,container in ipairs(root:GetChildren()) do
+                if container.Name=="@BBStorage" or container.Name=="@bindstorage" then
+                    for _,button in ipairs(container:GetChildren()) do
+                        local wanted=textHidden[button.Name]
+                        if wanted~=nil and textApplied[button]~=wanted then
+                            textApplied[button]=wanted
+                            applyText(button,wanted)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end
+runtime.ButtonText={
+    SetHidden=function(ids,hidden)
+        for _,id in ipairs(ids) do textHidden[id]=hidden==true end
+        applyAllText()
+    end,
+    IsHidden=function(id) return textHidden[id]==true end,
+}
+task.spawn(function()
+    while runtimeAlive do
+        task.wait(0.3)
+        if next(textHidden) then pcall(applyAllText) end
+    end
+end)
 local STORAGE="@BBStorage"
 local buttons={}
 local spinner
@@ -5318,6 +5553,17 @@ local BindableButtons = (function()
         ColorSequenceKeypoint.new(0.75, Color3.new(0.0784314, 0.0784314, 0.54902)),
         ColorSequenceKeypoint.new(1, Color3.new(0.470588, 0.156863, 0.470588)),
     })
+    -- (switched on: the Settings / custom gradient like the big buttons; switched off: its
+    -- usual colours, or Settings' Secondary Variant)
+    local function bindColor(state)
+        local default=state and toggledColor or normalColor
+        local buttonStyle=env.VisualsV2Runtime.BigButtonStyle
+        if buttonStyle and type(buttonStyle.BindSequence)=="function" then
+            local ok,sequence=pcall(buttonStyle.BindSequence,state==true,default)
+            if ok and typeof(sequence)=="ColorSequence" then return sequence end
+        end
+        return default
+    end
 
     local function storage()
         local roots={}
@@ -5390,7 +5636,7 @@ local BindableButtons = (function()
             end
         end
         local stroke=b:FindFirstChild("@Stroke")
-        if stroke and stroke:IsA("UIGradient") then stroke.Color=state and toggledColor or normalColor end
+        if stroke and stroke:IsA("UIGradient") then stroke.Color=bindColor(state) end
     end
 
     function buttons.AddBButton(id,text,onFunc,offFunc,onMoved)
@@ -5443,7 +5689,7 @@ local BindableButtons = (function()
 
         local stroke=Instance.new("UIGradient")
         stroke.Name="@Stroke"
-        stroke.Color=normalColor
+        stroke.Color=bindColor(false)
         stroke.Parent=b
 
         local ripple=Instance.new("Frame")
@@ -5480,7 +5726,7 @@ local BindableButtons = (function()
             local fadeOut=TweenService:Create(b,TweenInfo.new(0.3,Enum.EasingStyle.Quad,Enum.EasingDirection.InOut),{ImageTransparency=1})
             fadeOut:Play(); fadeOut.Completed:Wait()
             value.Value=not value.Value
-            stroke.Color=value.Value and toggledColor or normalColor
+            stroke.Color=bindColor(value.Value)
             if value.Value then pcall(onFunc) else pcall(offFunc) end
             local baseAlpha=tonumber(b:GetAttribute("VisualsV2BaseImageTransparency")) or 0
             local fadeIn=TweenService:Create(b,TweenInfo.new(0.3,Enum.EasingStyle.Quad,Enum.EasingDirection.InOut),{ImageTransparency=baseAlpha})
@@ -5525,6 +5771,17 @@ local BindableButtons = (function()
         return value
     end
 
+    -- (the gradient changed in Settings or Miscellaneous: every bind button shows it now)
+    local buttonStyle=env.VisualsV2Runtime.BigButtonStyle
+    if buttonStyle and type(buttonStyle.OnChange)=="function" then
+        buttonStyle.OnChange(function()
+            for _,b in pairs(buttons.Buttons) do
+                local stroke=b:FindFirstChild("@Stroke")
+                local value=b:FindFirstChild("BindValue")
+                if stroke and stroke:IsA("UIGradient") then stroke.Color=bindColor(value and value.Value) end
+            end
+        end)
+    end
     return buttons
 end)()
 
@@ -5644,6 +5901,11 @@ addToggle(speedSection,"Show Big Button",speedButtonVisible,function(state)
 end)
 addToggle(speedSection,"Show Bindable Button",speedBindButtonVisible,function(state)
     speedBindButtonVisible=state; SetCfg("speedBindButtonVisible",state); updateSpeedButtonStyle()
+end)
+addToggle(speedSection,"Hide Button Text",C("speedHideText",false)==true,function(state)
+    SetCfg("speedHideText",state)
+    local buttonText=env.VisualsV2Runtime.ButtonText
+    if buttonText then buttonText.SetHidden({"VisualsV2_SpeedGlitchBig","VisualsV2_SpeedBind"},state) end
 end)
 speedSection:AddSlider("Big Button Size",50,300,speedButtonWidth,function(value)
     speedButtonWidth=math.clamp(tonumber(value) or 140,50,300)
@@ -6929,6 +7191,10 @@ makeButton()
 local visibleToggle=addToggle(section,"Show Trick Shoot Button",state.visible,function(value)
     state.visible=value;SetCfg("trickShootButtonVisible",value)
     makeButton();button.SetVisible(value)
+end)
+addToggle(section,"Hide Button Text",C("trickShootHideText",false)==true,function(value)
+    SetCfg("trickShootHideText",value)
+    if runtime.ButtonText then runtime.ButtonText.SetHidden({"VisualsV2_TrickShootBig"},value) end
 end)
 local typeDropdown=addDropdown(section,"Trick Shot Type",TYPES,state.kind,function(value)
     if type(value)=="table" then value=value[1] end
@@ -10803,7 +11069,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-21-fixes-37",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-21-fixes-38",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -17218,6 +17484,17 @@ local __GOLD_WAIT_COLOR = ColorSequence.new({
     ColorSequenceKeypoint.new(1,   __RGB(160, 82, 45))
 })
 
+-- (a ready bind button: its usual colours, or Settings' Secondary Variant; Miscellaneous'
+-- custom gradient leaves them as they are)
+local function __BIND_READY(isGold)
+    local default = isGold and __GOLD_NORMAL_COLOR or __NORMAL_COLOR
+    local buttonStyle = env.VisualsV2Runtime.BigButtonStyle
+    if buttonStyle and type(buttonStyle.BindSequence) == "function" then
+        local ok, sequence = pcall(buttonStyle.BindSequence, false, default)
+        if ok and typeof(sequence) == "ColorSequence" then return sequence end
+    end
+    return default
+end
 local function bind_safecallback(callback)
     if not callback then return end
     local ok, err = xpcall(callback, function(e) return debug.traceback(e) end)
@@ -17337,11 +17614,8 @@ function BindableButtons.AddBButton(id, text, clickFunc, isGold)
 
     local Stroke = Instance.new("UIGradient", ImageButton)
     Stroke.Name = "@Stroke"
-    if isGold then
-        Stroke.Color = __GOLD_NORMAL_COLOR
-    else
-        Stroke.Color = __NORMAL_COLOR
-    end
+    ImageButton:SetAttribute("VV2Gold", isGold == true)
+    Stroke.Color = __BIND_READY(isGold)
 
     local ripple = Instance.new("Frame")
     ripple.Name = "@ripple"
@@ -17390,12 +17664,25 @@ function BindableButtons.UpdateBButtonText(id, text, isWaiting, isGold)
     end
 
     local stroke = btn:FindFirstChild("@Stroke")
+    btn:SetAttribute("VV2Waiting", isWaiting == true)
     if stroke then
-        if isGold then
-            stroke.Color = isWaiting and __GOLD_WAIT_COLOR or __GOLD_NORMAL_COLOR
+        if isWaiting then
+            stroke.Color = isGold and __GOLD_WAIT_COLOR or __WAIT_COLOR
         else
-            stroke.Color = isWaiting and __WAIT_COLOR or __NORMAL_COLOR
+            stroke.Color = __BIND_READY(isGold)
         end
+    end
+end
+-- (the gradient changed in Settings or Miscellaneous: every ready bind button shows it now)
+do
+    local buttonStyle = env.VisualsV2Runtime.BigButtonStyle
+    if buttonStyle and type(buttonStyle.OnChange) == "function" then
+        buttonStyle.OnChange(function()
+            for _, btn in pairs(BindableButtons.Buttons) do
+                local stroke = btn:FindFirstChild("@Stroke")
+                if stroke and not btn:GetAttribute("VV2Waiting") then stroke.Color = __BIND_READY(btn:GetAttribute("VV2Gold") == true) end
+            end
+        end)
     end
 end
 
@@ -17867,6 +18154,10 @@ section:AddToggle("Enable BJ Big Button", function(e)
     setButtonWanted("VV2_BombJump_Big", e)
 end)
 
+section:AddToggle("Hide BJ Button Text", function(e)
+    local buttonText = env.VisualsV2Runtime.ButtonText
+    if buttonText then buttonText.SetHidden({"VV2_BombJump_Big", "VV2_BombJump_Bind"}, e) end
+end)
 section:AddSlider("BJ Big Button Size", 50, 300, CONFIG.DefaultSize, function(value)
     bigButtonSize = value
     styleButton("VV2_BombJump_Big")
@@ -18174,6 +18465,10 @@ gbjSection:AddToggle("Enable GBJ Big Button", function(e)
     setButtonWanted("VV2_GoldBombJump_Big", e)
 end)
 
+gbjSection:AddToggle("Hide GBJ Button Text", function(e)
+    local buttonText = env.VisualsV2Runtime.ButtonText
+    if buttonText then buttonText.SetHidden({"VV2_GoldBombJump_Big", "VV2_GoldBombJump_Bind"}, e) end
+end)
 gbjSection:AddSlider("GBJ Big Button Size", 50, 300, 200, function(value)
     gbjBigButtonSize = value
     styleButton("VV2_GoldBombJump_Big")
@@ -18881,6 +19176,11 @@ for _,spec in ipairs(BIND_KEYS) do
         BindableButtons:SetPosition(spec.id,spec.default)
     end)
 end
+toggle("Hide Button Text","bombFlingHideText",function(value)
+    if runtime.ButtonText then
+        runtime.ButtonText.SetHidden({"VisualsV2_BombFlingSheriff","VisualsV2_BombFlingMurderer","VisualsV2_BombFlingSelected"},value)
+    end
+end)
 
 local respawn=LocalPlayer.CharacterAdded:Connect(function()
     ownBomb=nil
@@ -19415,12 +19715,13 @@ end)()
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
 --    a firefly or has flown its course, the fireflies are free for the next throw.)
 --  MMV
---  * Gun Shield: the original MMV shield (shield v13): a filled 5 x 5 grid of fireflies
---    0.55 apart, 1 stud off your body, centred at your middle and turned with it. Here
---    it switches between your back and your front, whichever faces the sheriff/hero, so your
---    whole main body is covered from them (filled from the middle out; more fireflies than
---    the grid holds cover your other side too). Behind a wall and 80 studs or more away:
---    the ring aura instead. A thrown knife at you: all of them onto the knife, as in v13.
+--  * Gun Shield: the original MMV shield (shield v13), a filled 5 x 5 square grid (here 0.52
+--    apart), turned to face the sheriff/hero wherever they are (all round you, tilted up or
+--    down to them, following them smoothly like MM2's Knife Shield) and held right against
+--    your body on that side: Shield Distance studs off your body (front, back, sides and in
+--    between alike), so no firefly is wasted far from you. Filled from the middle out as a
+--    square; more than 25 make a second, staggered layer just behind it. Behind a wall and 80
+--    studs or more away: the ring aura instead. A thrown knife at you: all onto the knife.
 --  Both (Firefly Ring Aura and Follow Mouse can be on together)
 --  * Firefly Ring Aura: the fireflies circle you, each rising and falling (MM2: it also
 --    makes the shield's fireflies swap places now and then).
@@ -19435,9 +19736,13 @@ end)()
 --    same way. The moment they
 --    die (or are out of the round, or far off in the lobby), it's you again.
 --  * Auto Use Firefly Jar: uses the jar the moment its cooldown is over (the same 16 s
---    as Firefly Clutch's timer), without the jar's animation, only while the fireflies are
---    of use (a protection mode on and someone who could hurt you within 200 studs, or the
---    ring aura / follow mouse on), and puts back exactly what you were holding.
+--    as Firefly Clutch's timer; longer if the jar shows it needs longer), without the jar's
+--    animation, only while the fireflies are of use (a protection mode on and someone who
+--    could hurt you within 200 studs, the ring aura / follow mouse on, or the first 20 s
+--    after you spawn or the round starts), and puts back exactly what you were holding.
+--    After a respawn or a teleport (the round starting or ending) it waits for Increase
+--    Inventory's Auto Get Tools to have every chosen toy in its slot, then goes at once,
+--    and has your toys put back in order after each use.
 --  * The jar's lid, while it's out, moves round with the fireflies as one of them.
 --  * In the lobby, or dead, with no attacker within 200 studs: just the ring aura (or the
 --    mouse swarm).
@@ -19464,12 +19769,13 @@ local settings={
     interceptReach=math.clamp(tonumber(C("fireflyInterceptReach",1)) or 1,1,5),
     ringDistance=math.clamp(tonumber(C("fireflyRingDistance",3)) or 3,1,8),
     ringSpeed=math.clamp(tonumber(C("fireflyRingSpeed",3)) or 3,0,10),
+    shieldGap=math.clamp(tonumber(C("fireflyShieldGap",0.1)) or 0.1,0,3),
 }
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
--- MMV's Gun Shield, as in the original (shield v13): SHIELD_ROWS/COLS 5, SHIELD_SPACING
--- 0.55, SHIELD_HEIGHT 0; 1 stud off your body (the original's 1.8, brought in closer)
-local SHIELD={rows=5,columns=5,spacing=0.55,distance=1,height=0}
+-- MMV's Gun Shield: the original's 5 x 5 square (shield v13), 0.52 apart, centred at your
+-- middle (SHIELD_HEIGHT 0); how far off your body is the Shield Distance slider
+local SHIELD={rows=5,columns=5,spacing=0.52,height=0}
 local MMV_FAR=80            -- a gun holder behind a wall this far away: just the ring aura
 local MAX_FIREFLIES=90
 local NEAR=40               -- a murderer this close is shielded against even behind a wall
@@ -19482,7 +19788,6 @@ local list={}
 local loop,placeLoop,watchAdded,watchRemoved,autoLoop
 local knives={}
 local smoothDirection=nil
-local bodySide=nil
 local murdererNotice=-math.huge
 local diagnostics={fireflies=0,owned=0,threat="none",mode="idle",active=false,intercepts=0,jarUses=0,jarAttempts=0,skippedSlots=0,knivesDone=0}
 
@@ -19816,7 +20121,8 @@ local function jarReady(tool)
     if not tool or tool.Enabled==false then return false end
     if os.clock()<(jar.retryAt or 0) then return false end
     if jar.enabledBack then return true end
-    return os.clock()-jar.usedAt>=JAR_COOLDOWN
+    -- (16 s like Firefly Clutch's timer, or longer once the jar has shown it needs longer)
+    return os.clock()-jar.usedAt>=(jar.cooldown or JAR_COOLDOWN)
 end
 -- Uses the jar for you: taken out (hidden on your screen), opened, and held until the
 -- fireflies are out (the jar takes a moment; putting it away sooner stops it), with the
@@ -19902,27 +20208,39 @@ local function useJar()
             open()
             while tool.Parent==character and not out() and os.clock()-first<HOLD and not switched do
                 if not opened then
-                    if os.clock()-first>2.4 then break end
+                    if os.clock()-first>(isMMV and 2.4 or 1.5) then break end
                     if os.clock()-lastOpen>=0.35 then open() end
                 end
                 task.wait(0.03)
             end
             if out() or opened then
                 if out() then diagnostics.jarUses=diagnostics.jarUses+1 end
+                -- (its cooldown counts from the opening that worked; if it was tried too early
+                -- first, the jar's real cooldown is about the time since it last opened, so
+                -- next time it's tried right then)
+                local openedTime=openedAt or lastOpen or os.clock()
+                if jar.lastSuccessAt and (jar.failures or 0)>0 then
+                    jar.cooldown=math.clamp(openedTime-jar.lastSuccessAt-0.15,4,40)
+                end
+                jar.lastSuccessAt=openedTime
+                diagnostics.jarCooldown=jar.cooldown or JAR_COOLDOWN
                 jar.failures=0;jar.retryAt=nil
-                -- (its cooldown counts from the opening that worked)
-                jar.usedAt=openedAt or lastOpen or jar.usedAt
+                jar.usedAt=openedTime
                 if out() then task.wait(0.25) end   -- (all of them out)
             else
-                -- it didn't open: tried again soon, then less and less often
+                -- it didn't open: tried again very soon, then less often
                 jar.failures=(jar.failures or 0)+1
-                jar.retryAt=os.clock()+math.min(15,1.5*2^(jar.failures-1))
+                jar.retryAt=os.clock()+math.min(8,0.6*2^(jar.failures-1))
                 jar.usedAt=-math.huge
             end
             for trackObject in pairs(stilled) do
                 if jarTrack(trackObject) then pcall(function() trackObject:Stop(0) end) end
             end
             putBack()
+            -- (and Increase Inventory's Auto Get Tools puts your toys back in their slots, so
+            -- the jar never ends up first)
+            local tools=runtime.AutoGetTools
+            if tools and type(tools.RequestOrder)=="function" then pcall(tools.RequestOrder) end
         else
             -- (it came out late, or not at all: whatever happens it doesn't stay in your hand)
             local late=os.clock()+1
@@ -20152,31 +20470,57 @@ local function ringSpots(count,radius,heights,spin,lookYaw,gap)
     end
     return spots
 end
--- MMV: the original shield's square grid (getGridPositions): behind you along -LookVector
--- (or in front, side=1), across your RightVector and UpVector, so it turns and leans with
--- your body. Filled from the middle out; past a full grid, the next ones go on your other
--- side. (Offsets from your middle, LIFT up.)
-local shieldCells=nil
-local function shieldSpots(count,frame,side,time)
-    if not shieldCells then
-        shieldCells={}
-        local width=(SHIELD.columns-1)*SHIELD.spacing
-        local height=(SHIELD.rows-1)*SHIELD.spacing
-        for row=0,SHIELD.rows-1 do
-            for column=0,SHIELD.columns-1 do
-                shieldCells[#shieldCells+1]=Vector2.new(column*SHIELD.spacing-width/2,row*SHIELD.spacing-height/2+SHIELD.height)
-            end
+-- MMV: the original shield's square grid, facing the way the shot would come from
+-- (facing: a unit vector, tilted up or down), right against your body. How far your body
+-- reaches that way comes from your HumanoidRootPart (as wide as your arms, as deep as your
+-- torso, scaled with you), so it's close on every side. Always a square (or as near as the
+-- number of fireflies allows: 9 make 3 x 3, 12 make 4 x 3, 16 make 4 x 4, 25 the full
+-- 5 x 5; a short last row is the corners left out, never a diamond); past 25, a second layer
+-- just behind it, staggered so it covers the first one's gaps. (Offsets from your middle,
+-- LIFT up.)
+local shieldCellsFor={}
+local function squareCells(count)
+    local cached=shieldCellsFor[count]
+    if cached then return cached end
+    local columns=math.clamp(math.ceil(math.sqrt(count)),1,SHIELD.columns)
+    local rows=math.clamp(math.ceil(count/columns),1,SHIELD.rows)
+    local cells={}
+    local width=(columns-1)*SHIELD.spacing
+    local height=(rows-1)*SHIELD.spacing
+    for row=0,rows-1 do
+        for column=0,columns-1 do
+            cells[#cells+1]=Vector2.new(column*SHIELD.spacing-width/2,row*SHIELD.spacing-height/2)
         end
-        table.sort(shieldCells,function(a,b) return a.Magnitude<b.Magnitude end)
     end
-    local look,right,up=frame.LookVector,frame.RightVector,frame.UpVector
+    -- (the middle first, the corners last: those are the ones left out of a short grid)
+    table.sort(cells,function(a,b) return a.Magnitude<b.Magnitude end)
+    shieldCellsFor[count]=cells
+    return cells
+end
+local function shieldSpots(count,root,facing,time)
+    local shieldCells=squareCells(math.min(count,SHIELD.rows*SHIELD.columns))
+    -- how far your body reaches toward them, measured in your own facing
+    local size=root.Size
+    local halfWidth,halfDepth=math.clamp(size.X,1,4),math.clamp(size.Z/2,0.3,1.5)
+    local flatFacing=Vector3.new(facing.X,0,facing.Z)
+    flatFacing=flatFacing.Magnitude>0.01 and flatFacing.Unit or root.CFrame.LookVector
+    local localFacing=root.CFrame:VectorToObjectSpace(flatFacing)
+    local reach=math.abs(localFacing.X)*halfWidth+math.abs(localFacing.Z)*halfDepth
+    local halfGrid=(SHIELD.rows-1)*SHIELD.spacing/2
+    -- (tilted, the grid's top or bottom leans in: moved out just enough to stay off you)
+    local tilt=math.abs(facing.Y)*halfGrid
+    local right=facing:Cross(Vector3.yAxis)
+    right=right.Magnitude>0.01 and right.Unit or Vector3.xAxis
+    local up=right:Cross(facing).Unit
+    local base=reach+settings.shieldGap+tilt
     local spots={}
     for index=1,count do
         local cell=shieldCells[(index-1)%#shieldCells+1]
-        local pass=math.floor((index-1)/#shieldCells)
-        local towards=(pass%2==0) and side or -side
+        local layer=math.floor((index-1)/#shieldCells)
+        local stagger=layer%2==1 and SHIELD.spacing/2 or 0
         local jiggle=Vector3.new(math.sin(time*7+index*1.7),math.cos(time*6.3+index*2.3),math.sin(time*5.1+index*0.9))*0.03
-        spots[#spots+1]=look*towards*(SHIELD.distance+math.floor(pass/2)*0.3)+right*cell.X+up*cell.Y-LIFT+jiggle
+        local out=flatFacing*(base+layer*0.3)
+        spots[#spots+1]=out+right*(cell.X+stagger)+up*(cell.Y+stagger)+Vector3.new(0,SHIELD.height,0)-LIFT+jiggle
     end
     return spots
 end
@@ -20610,18 +20954,18 @@ local function step(dt)
             if gunHolder then
                 local aim=gunHolder.root.Position+Vector3.new(0,1.5,0)
                 if gunHolder.seen or gunHolder.distance<MMV_FAR then
-                    -- the original's grid on your back, or on your front: whichever faces
-                    -- them (it only flips once they're clearly on the other side)
-                    local look=flat(root.CFrame.LookVector) or Vector3.new(0,0,-1)
-                    local toThem=flat(aim-center) or look
-                    local dot=look:Dot(toThem)
-                    if not bodySide then bodySide=dot>=0 and 1 or -1
-                    elseif bodySide==1 and dot<-0.15 then bodySide=-1
-                    elseif bodySide==-1 and dot>0.15 then bodySide=1 end
-                    spots=shieldSpots(count,root.CFrame,bodySide,clock)
+                    -- the grid turned to them, wherever they are, tilted up or down to them
+                    -- and following them smoothly, right against your body on that side
+                    local direction=aim-center
+                    local horizontal=flat(direction) or root.CFrame.LookVector
+                    local pitch=math.clamp(math.atan2(direction.Y,Vector3.new(direction.X,0,direction.Z).Magnitude),math.rad(-60),math.rad(60))
+                    local facing=(horizontal*math.cos(pitch)+Vector3.new(0,math.sin(pitch),0)).Unit
+                    smoothDirection=smoothDirection and smoothDirection:Lerp(facing,math.clamp(FOLLOW*dt,0,1)) or facing
+                    if smoothDirection.Magnitude<0.01 then smoothDirection=facing end
+                    spots=shieldSpots(count,root,smoothDirection.Unit,clock)
                     grid=true
                     active=true
-                    kind=kind or ("shielding from "..gunHolder.player.Name..(bodySide==1 and " (front)" or " (back)"))
+                    kind=kind or ("shielding from "..gunHolder.player.Name)
                 elseif pointAt then
                     -- (hidden and far: not needed, so Follow Mouse while you point)
                     spots=idle(settings.ringDistance,settings.ringSpeed*0.6,"ring aura")
@@ -20675,7 +21019,7 @@ local function step(dt)
     end
     kind=kind or "idle"
     if guardPlayer then kind=kind.." (protecting "..guardPlayer.Name..")" end
-    if not grid then smoothDirection=nil;bodySide=nil end
+    if not grid then smoothDirection=nil end
     diagnostics.threat=kind;diagnostics.mode=kind;diagnostics.active=active
     if spots then
         local points={}
@@ -20756,7 +21100,7 @@ local function sweep()
     -- only now and then, close by: looking over everything nearby every half second made
     -- the game hitch)
     local busy=os.clock()-math.max(jar.usedAt,jar.spawnedAt)<12
-    if os.clock()-sweepAt<(busy and 0.5 or 3) then return end
+    if os.clock()-sweepAt<(busy and (isMMV and 0.5 or 0.25) or 3) then return end
     sweepAt=os.clock()
     local root,character=myRoot()
     if not root then return end
@@ -20860,6 +21204,10 @@ end
 local function jarNeeded(root)
     if #list>=MAX_FIREFLIES then return false end
     if settings.ring or settings.mouse then return true end
+    -- (just spawned, or the round just started: wanted straight away, before anyone has
+    -- their knife or gun out)
+    local sinceChange=os.clock()-math.max(jar.respawnAt or -math.huge,jar.teleportAt or -math.huge)
+    if sinceChange<20 and protecting() then return true end
     local guardPlayer,guardRoot=guardTarget(root)
     for _,threat in ipairs(attackers(guardRoot or root,guardPlayer)) do
         if threat.distance<=RANGE then return true end
@@ -20873,21 +21221,34 @@ local function autoStep()
     local root,character=myRoot()
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid or humanoid.Health<=0 then return end
+    -- (a jump of over 50 studs is a teleport: the round starting or ending, when the game
+    -- hands out and takes back tools)
+    local now=os.clock()
+    if jar.lastRootPosition and (root.Position-jar.lastRootPosition).Magnitude>50 then jar.teleportAt=now end
+    jar.lastRootPosition=root.Position
     local tool=jarTool()
     if not jarReady(tool) then return end
     refreshRound()
     if murdererMe(root) then return end
     if clutchBusy() then return end
-    -- (after a respawn, Increase Inventory's Auto Get Tools first fetches your toys and puts
-    -- them in order: the jar waits until that's done, then a moment more; at most 15 s)
-    local sinceRespawn=os.clock()-(jar.respawnAt or -math.huge)
-    if sinceRespawn<2 then return end
+    -- After a respawn or a teleport, and whenever Increase Inventory's Auto Get Tools is
+    -- fetching your toys or putting them in their slots, the jar waits for it; the moment
+    -- it's done (every chosen toy in place) the jar goes. (Never held up for good by a toy
+    -- that won't come: 12 s at most.)
+    local sinceChange=now-math.max(jar.respawnAt or -math.huge,jar.teleportAt or -math.huge)
+    if sinceChange<0.3 then return end
     local tools=runtime.AutoGetTools
-    if tools and type(tools.Busy)=="function" and sinceRespawn<15 then
+    if tools and type(tools.Busy)=="function" then
         local ok,busy=pcall(tools.Busy)
-        if ok and busy then jar.toolsBusyAt=os.clock();return end
+        if ok and busy then
+            jar.toolsBusySince=jar.toolsBusySince or now
+            jar.toolsBusyAt=now
+            if now-jar.toolsBusySince<12 then return end
+        else
+            jar.toolsBusySince=nil
+        end
     end
-    if os.clock()-(jar.toolsBusyAt or -math.huge)<0.5 then return end
+    if now-(jar.toolsBusyAt or -math.huge)<0.1 and not jar.toolsBusySince then return end
     if not jarNeeded(root) then diagnostics.jarIdle=true;return end
     diagnostics.jarIdle=false
     useJar()
@@ -20973,6 +21334,10 @@ if isMMV then
     section:AddSlider("Ring Speed",0,10,settings.ringSpeed,function(value)
         settings.ringSpeed=math.clamp(tonumber(value) or 3,0,10);SetCfg("fireflyRingSpeed",settings.ringSpeed)
     end)
+    -- (how far the shield sits off your body while it's shielding: 0 is right on you)
+    section:AddSlider("Shield Distance",0.01,3,settings.shieldGap,function(value)
+        settings.shieldGap=math.clamp(tonumber(value) or 0.1,0,3);SetCfg("fireflyShieldGap",settings.shieldGap)
+    end)
 else
     -- (1 to 4 studs, in steps of a hundredth)
     section:AddSlider("Firefly Distance",1.01,4,settings.distance,function(value)
@@ -21027,7 +21392,7 @@ runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
-    settings.distance,settings.ringDistance,settings.ringSpeed,settings.interceptReach=2.2,3,3,1
+    settings.distance,settings.ringDistance,settings.ringSpeed,settings.interceptReach,settings.shieldGap=2.2,3,3,1,0.1
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
     stop()
     for _,part in ipairs(table.clone(list)) do forget(part) end
@@ -22553,6 +22918,12 @@ env.VisualsV2Runtime.AutoGetTools={Busy=function()
         end
     end
     return false
+end,
+-- (after the jar has been taken out and put back: every chosen toy back in its slot)
+RequestOrder=function()
+    if not autoGetTools or not alive or not runtimeAlive then return end
+    toyOrderDirty=true
+    pcall(requestRecovery,false)
 end}
 local inventoryToggle=addToggle(section,"Increase Inventory",inventoryEnabled,function(state)
     inventoryEnabled=state
