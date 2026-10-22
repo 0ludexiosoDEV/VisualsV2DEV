@@ -364,7 +364,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-38"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-21-fixes-40"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -5030,8 +5030,9 @@ function style.Custom()
     })
 end
 -- ODH's Settings: the UI customization picked there (its files are in the executor's
--- workspace, Ixry Shizuka/customs/ui_customizations). Which one is picked is read off ODH's
--- own menu: the customization whose colours it is showing.
+-- workspace, Ixry Shizuka/customs/ui_customizations). ODH's own big buttons are copied when
+-- there are any; which customization is picked is read off ODH's own buttons and menu (the
+-- customization whose colours they show) or ODH's saved settings.
 style.settings={secondary=nil,variant=nil,name=nil}
 style.listeners={}
 local THEME_FOLDER="Ixry Shizuka/customs/ui_customizations"
@@ -5064,10 +5065,38 @@ local function orderedColors(group)
 end
 local function sequenceOf(colors)
     if not colors or #colors<2 then return nil end
+    -- (spread like ODH's own gradient when there are as many colours as it has)
+    local template=GRADIENT.Keypoints
     local points={}
-    for index,color in ipairs(colors) do points[#points+1]=ColorSequenceKeypoint.new((index-1)/(#colors-1),color) end
+    for index,color in ipairs(colors) do
+        local time=#colors==#template and template[index].Time or (index-1)/(#colors-1)
+        points[#points+1]=ColorSequenceKeypoint.new(time,color)
+    end
     return ColorSequence.new(points)
 end
+-- the colours of a gradient (or a list of colours) as a set
+local function colorSet(source)
+    local set,count={},0
+    local list=source
+    if typeof(source)=="ColorSequence" then
+        list={}
+        for _,point in ipairs(source.Keypoints) do list[#list+1]=point.Value end
+    end
+    for _,color in ipairs(list or {}) do
+        local hex=hexOf(color)
+        if not set[hex] then set[hex]=true;count=count+1 end
+    end
+    return {set=set,count=count}
+end
+-- the same colours (at least 2, every one of the smaller set in the other)
+local function sameColors(a,b)
+    if not a or not b or a.count<2 or b.count<2 then return false end
+    local common=0
+    for hex in pairs(a.set) do if b.set[hex] then common=common+1 end end
+    return common>=math.min(a.count,b.count)
+end
+local TEMPLATE_SET=colorSet(GRADIENT)
+local GOLD_SET=colorSet({Color3.fromRGB(255,215,0),Color3.fromRGB(255,140,0),Color3.fromRGB(184,134,11)})
 local function groupNamed(data,wanted)
     for key,value in pairs(data) do
         if type(key)=="string" and key:lower():gsub("[^%a]","")==wanted then return value end
@@ -5089,6 +5118,7 @@ local function readThemes()
                     local entry={name=path:match("([^/\\]+)%.[Jj][Ss][Oo][Nn]$") or path,data=data,colors={}}
                     entry.secondary=orderedColors(groupNamed(data,"secondary"))
                     entry.variant=orderedColors(groupNamed(data,"secondaryvariant"))
+                    entry.secondarySet=colorSet(entry.secondary)
                     for _,group in pairs(data) do
                         if type(group)=="table" then
                             for _,value in pairs(group) do
@@ -5104,76 +5134,231 @@ local function readThemes()
     end
     return list
 end
--- every colour ODH's menu shows right now (not the add-on's own buttons)
-local OUR_PREFIXES={"visualsv2","vv2_"}
+-- every colour ODH's menu shows right now (none of the add-on's own things, none of
+-- Roblox's own menus), and the gradients in it
+local OUR_PREFIXES={"visualsv2","vv2_","vv2 "}
 local function ours(name)
     name=name:lower()
     for _,prefix in ipairs(OUR_PREFIXES) do if name:sub(1,#prefix)==prefix then return true end end
     return false
 end
-local function menuColors()
-    local seen,found={},false
-    local budget=8000
+local ROBLOX_GUIS={RobloxGui=true,RobloxPromptGui=true,RobloxLoadingGUI=true,RobloxNetworkPauseNotification=true,
+    TopBarApp=true,InGameMenu=true,PlayerList=true,ExperienceChat=true,BubbleChat=true,PurchasePromptApp=true,
+    DevConsoleMaster=true,CoreScriptLocalization=true,FoundationOverlay=true,ThemeProvider=true,TeleportGui=true,
+    HeadsetDisconnectedDialog=true,Chat=true,TouchGui=true,BubbleChatContainer=true}
+local function guiRoots()
     local roots={}
+    local function add(root)
+        if typeof(root)~="Instance" then return end
+        for _,existing in ipairs(roots) do if existing==root then return end end
+        roots[#roots+1]=root
+    end
     local hidden=type(gethui)=="function" and gethui or env.gethui
-    if type(hidden)=="function" then local ok,root=pcall(hidden);if ok and typeof(root)=="Instance" then roots[#roots+1]=root end end
-    pcall(function() roots[#roots+1]=game:GetService("CoreGui") end)
+    if type(hidden)=="function" then local ok,root=pcall(hidden);if ok then add(root) end end
+    pcall(function() add(game:GetService("CoreGui")) end)
+    add(LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+    return roots
+end
+-- (ODH's own big buttons, wherever they were seen: its template's look, a see-through
+-- button with a gradient outline)
+local bigButtonsSeen=setmetatable({}, {__mode="k"})
+local function looksBig(button)
+    if not button:IsA("GuiButton") or ours(button.Name) then return false end
+    local transparency=button.BackgroundTransparency
+    if transparency<0.8 or transparency>0.97 then return false end
+    local stroke=button:FindFirstChildOfClass("UIStroke")
+    if not stroke or stroke.Thickness<0.8 or stroke.Thickness>3 then return false end
+    return stroke:FindFirstChildOfClass("UIGradient")~=nil
+end
+local function menuColors()
+    local seen,found,gradients={},false,{}
+    local walked={}
+    local total=15000
     local function add(color) if typeof(color)=="Color3" then seen[hexOf(color)]=true end end
-    for _,root in ipairs(roots) do
+    -- (walked by hand, so whole subtrees of ours are left out, each menu with its own share)
+    -- (a few hundred at a time, a frame apart, so looking never makes the game hitch)
+    local sinceRest=0
+    local function walk(object,budget)
+        local stack={object}
+        while #stack>0 and budget>0 and total>0 do
+            local current=table.remove(stack)
+            budget=budget-1;total=total-1
+            sinceRest=sinceRest+1
+            if sinceRest>=400 then sinceRest=0;task.wait() end
+            if walked[current] or (current~=object and ours(current.Name)) then
+                -- (skipped with everything inside it)
+            else
+                walked[current]=true
+                if current:IsA("GuiObject") then
+                    found=true
+                    if current:IsA("GuiButton") and looksBig(current) then bigButtonsSeen[current]=true end
+                    add(current.BackgroundColor3)
+                    if current:IsA("ImageLabel") or current:IsA("ImageButton") then add(current.ImageColor3) end
+                elseif current:IsA("UIStroke") then add(current.Color)
+                elseif current:IsA("UIGradient") then
+                    for _,point in ipairs(current.Color.Keypoints) do add(point.Value) end
+                    if #gradients<400 then gradients[#gradients+1]=colorSet(current.Color) end
+                end
+                for _,child in ipairs(current:GetChildren()) do stack[#stack+1]=child end
+            end
+        end
+    end
+    for _,root in ipairs(guiRoots()) do
         local okChildren,children=pcall(function() return root:GetChildren() end)
+        -- (in the game's own PlayerGui only the shared containers add-ons use: the game's own
+        -- menus are huge and not ODH's)
+        local gameGui=root:IsA("PlayerGui")
         for _,gui in ipairs(okChildren and children or {}) do
-            local okGui=pcall(function()
-                -- (not the button storages: the add-on's own buttons there show the Settings
-                -- colours too, and would keep the old pick)
-                if not gui:IsA("LayerCollector") or ours(gui.Name) or gui.Name:sub(1,6)=="Roblox"
-                    or gui.Name=="@BBStorage" or gui.Name=="@bindstorage" then return end
-                for _,object in ipairs(gui:GetDescendants()) do
-                    budget=budget-1
-                    if budget<=0 then break end
-                    if not ours(object.Name) then
-                        if object:IsA("GuiObject") then
-                            found=true
-                            add(object.BackgroundColor3)
-                            if object:IsA("ImageLabel") or object:IsA("ImageButton") then add(object.ImageColor3) end
-                        elseif object:IsA("UIStroke") then add(object.Color)
-                        elseif object:IsA("UIGradient") then
-                            for _,point in ipairs(object.Color.Keypoints) do add(point.Value) end
+            pcall(function()
+                if ours(gui.Name) or ROBLOX_GUIS[gui.Name] or gui.Name:sub(1,6)=="Roblox" then return end
+                if gameGui and gui.Name:sub(1,1)~="@" then return end
+                if gui:IsA("LayerCollector") or gui:IsA("Folder") then walk(gui,6000) end
+            end)
+            if total<=0 then break end
+        end
+    end
+    return seen,found,gradients
+end
+-- ODH's own big buttons (in the shared storage, not ours or another add-on's usual one): the
+-- gradients they show now
+local function odhButtonGradients()
+    local list={}
+    local buttons={}
+    for _,root in ipairs(guiRoots()) do
+        pcall(function()
+            local storageGui=root:FindFirstChild("@BBStorage")
+            if not storageGui then return end
+            for _,button in ipairs(storageGui:GetChildren()) do
+                if not ours(button.Name) and button:IsA("GuiButton") then buttons[button]=true end
+            end
+        end)
+    end
+    for button in pairs(bigButtonsSeen) do
+        if button.Parent then buttons[button]=true else bigButtonsSeen[button]=nil end
+    end
+    for button in pairs(buttons) do
+        pcall(function()
+            local stroke=button:FindFirstChildOfClass("UIStroke")
+            local gradient=stroke and stroke:FindFirstChildOfClass("UIGradient") or button:FindFirstChildOfClass("UIGradient")
+            if gradient then
+                local colors=colorSet(gradient.Color)
+                if colors.count>=2 and not sameColors(colors,TEMPLATE_SET) and not sameColors(colors,GOLD_SET) then
+                    list[#list+1]={sequence=gradient.Color,colors=colors}
+                end
+            end
+        end)
+    end
+    return list
+end
+-- the customization ODH saved as picked: a settings file of ODH's that names one of them
+-- (looked through at most every 15 seconds)
+local saved={at=-math.huge,pick=nil}
+local function savedPick(themes)
+    if os.clock()-saved.at<15 then
+        for _,theme in ipairs(themes) do if theme.name==saved.pick then return theme end end
+        return nil
+    end
+    saved.at=os.clock();saved.pick=nil
+    local listFiles=type(listfiles)=="function" and listfiles or env.listfiles
+    local readFile=type(readfile)=="function" and readfile or env.readfile
+    local isFolder=type(isfolder)=="function" and isfolder or env.isfolder
+    if type(listFiles)~="function" or type(readFile)~="function" then return nil end
+    local found,checked={},0
+    local function look(folder,depth)
+        local ok,files=pcall(listFiles,folder)
+        if not ok or type(files)~="table" then return end
+        for _,path in ipairs(files) do
+            checked=checked+1
+            if checked>200 then return end
+            local lower=type(path)=="string" and path:lower() or ""
+            local okFolder,folderLike=false,false
+            if type(isFolder)=="function" then okFolder,folderLike=pcall(isFolder,path) end
+            if lower:find("ui_customizations",1,true) and lower:match("%.json$") then
+                -- (the customizations themselves)
+            elseif okFolder and folderLike==true then
+                if depth<3 then look(path,depth+1) end
+            elseif lower:match("%.json$") or lower:match("%.txt$") or lower:match("%.cfg$") or lower:match("%.ini$") or not lower:match("%.%w+$") then
+                local okRead,text=pcall(readFile,path)
+                if okRead and type(text)=="string" and #text<100000 then
+                    for _,theme in ipairs(themes) do
+                        local name=theme.name
+                        if text==name or text:find('"'..name..'"',1,true) or text:find("'"..name.."'",1,true)
+                            or text:find(name..".json",1,true) then
+                            found[theme]=true
                         end
                     end
                 end
-            end)
-            if budget<=0 then break end
+            end
         end
     end
-    return seen,found
+    look("Ixry Shizuka",0)
+    local pick,count=nil,0
+    for theme in pairs(found) do pick=theme;count=count+1 end
+    if count==1 then saved.pick=pick.name;return pick end
+    return nil
 end
 style.themeDiagnostics={}
 local function pickTheme(themes)
     style.themeDiagnostics={themes=#themes,scores={}}
-    if #themes==0 then return nil end
-    local seen,found=menuColors()
+    -- (no customizations to pick from: ODH's own big buttons are still looked for, to copy)
+    if #themes==0 then
+        if next(bigButtonsSeen)==nil and os.clock()-(style.lookedAt or -math.huge)>15 then
+            style.lookedAt=os.clock()
+            menuColors()
+        end
+        return nil
+    end
+    local function only(matches)
+        local pick,count=nil,0
+        for theme in pairs(matches) do pick=theme;count=count+1 end
+        return count==1 and pick or nil
+    end
+    -- (ODH's own big buttons showing one's Secondary colours)
+    local fromButtons={}
+    for _,candidate in ipairs(odhButtonGradients()) do
+        for _,theme in ipairs(themes) do
+            if sameColors(candidate.colors,theme.secondarySet) then fromButtons[theme]=true end
+        end
+    end
+    local pick=only(fromButtons)
+    if pick then style.themeDiagnostics.by="odh buttons";return pick end
+    local seen,found,gradients=menuColors()
     style.themeDiagnostics.menuFound=found
-    -- (only the colours that tell one customization from the others count)
+    -- (a gradient in ODH's menu in one's Secondary colours)
+    local hits={}
+    local best,bestHits,tied=nil,0,false
+    for _,theme in ipairs(themes) do
+        local count=0
+        for _,colors in ipairs(gradients) do if sameColors(colors,theme.secondarySet) then count=count+1 end end
+        hits[theme]=count
+        if count>bestHits then best,bestHits,tied=theme,count,false elseif count==bestHits and count>0 then tied=true end
+    end
+    if best and not tied then style.themeDiagnostics.by="menu gradients";return best end
+    -- (the colours that tell one customization from the others)
     local shared={}
     for _,theme in ipairs(themes) do
         for hex in pairs(theme.colors) do shared[hex]=(shared[hex] or 0)+1 end
     end
-    local best,bestScore,tie=nil,0,false
+    local tie=false
+    best,bestHits=nil,0
     for _,theme in ipairs(themes) do
         local score=0
         for hex in pairs(theme.colors) do
             if seen[hex] and shared[hex]==1 and hex~="000000" and hex~="FFFFFF" then score=score+1 end
         end
         style.themeDiagnostics.scores[theme.name]=score
-        if score>bestScore then best,bestScore,tie=theme,score,false
-        elseif score==bestScore and score>0 then tie=true end
+        if score>bestHits then best,bestHits,tie=theme,score,false
+        elseif score==bestHits and score>0 then tie=true end
     end
-    if best and bestScore>=2 and not tie then return best end
-    if tie and style.settings.name then
+    if best and bestHits>=2 and not tie then style.themeDiagnostics.by="menu";return best end
+    -- (ODH's saved settings naming one)
+    local fromFile=savedPick(themes)
+    if fromFile then style.themeDiagnostics.by="settings file";return fromFile end
+    if (tie or tied) and style.settings.name then
         for _,theme in ipairs(themes) do if theme.name==style.settings.name then return theme end end
     end
     -- (ODH's menu couldn't be seen at all and there's only the one customization: that one)
-    if not found and #themes==1 then return themes[1] end
+    if not found and #themes==1 then style.themeDiagnostics.by="only one";return themes[1] end
     return nil
 end
 local function restyleAll()
@@ -5182,25 +5367,43 @@ local function restyleAll()
     end
     for _,listener in ipairs(style.listeners) do pcall(listener) end
 end
+local function sequenceKey(sequence)
+    if typeof(sequence)~="ColorSequence" then return "" end
+    local parts={}
+    for _,point in ipairs(sequence.Keypoints) do parts[#parts+1]=string.format("%.3f:%s",point.Time,hexOf(point.Value)) end
+    return table.concat(parts,",")
+end
+local theme=nil
+local function apply()
+    -- ODH's own big buttons, when there are any, are copied exactly (the system's gradient as
+    -- it shows); otherwise the picked customization's Secondary colours
+    local mirrored=nil
+    local candidates=odhButtonGradients()
+    for _,candidate in ipairs(candidates) do
+        if theme and sameColors(candidate.colors,theme.secondarySet) then mirrored=candidate.sequence;break end
+    end
+    if not mirrored and not theme and candidates[1] then mirrored=candidates[1].sequence end
+    local secondary=mirrored or (theme and sequenceOf(theme.secondary)) or nil
+    local variant=theme and sequenceOf(theme.variant) or nil
+    local signature=sequenceKey(secondary).."|"..sequenceKey(variant)
+    if signature==style.settings.signature then return end
+    style.settings={secondary=secondary,variant=variant,name=theme and theme.name or nil,mirrored=mirrored~=nil,signature=signature}
+    restyleAll()
+end
 local function refreshTheme()
     local ok,themes=pcall(readThemes)
     if not ok then style.themeDiagnostics={error=tostring(themes)};return end
-    local theme=pickTheme(themes)
-    local name=theme and theme.name or nil
-    local signature=theme and table.concat({name,tostring(theme.secondary and #theme.secondary)},"|") or ""
-    for _,color in ipairs(theme and theme.secondary or {}) do signature=signature..hexOf(color) end
-    for _,color in ipairs(theme and theme.variant or {}) do signature=signature..hexOf(color) end
-    if signature==style.settings.signature then return end
-    style.settings={secondary=theme and sequenceOf(theme.secondary) or nil,variant=theme and sequenceOf(theme.variant) or nil,
-        name=name,signature=signature}
-    restyleAll()
+    theme=pickTheme(themes)
 end
--- (looked at again every few seconds, so changing it in Settings shows on our buttons soon)
+-- (ODH's own buttons are looked at every second, the customizations every 3 seconds, so a
+-- change in Settings shows on ours straight away)
 task.spawn(function()
-    task.wait(2)
+    task.wait(1)
+    local last=-math.huge
     while runtimeAlive do
-        pcall(refreshTheme)
-        task.wait(4)
+        if os.clock()-last>=3 then last=os.clock();pcall(refreshTheme) end
+        pcall(apply)
+        task.wait(1)
     end
 end)
 -- the sequence a button shows: the custom one when it's on, else the Settings one, else the
@@ -11069,7 +11272,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-21-fixes-38",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-21-fixes-40",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -19755,6 +19958,25 @@ local UserInput=game:GetService("UserInputService")
 local section=mainTab:AddSection("Firefly Protection","Utilities")
 local status=nil
 pcall(function() status=section:AddParagraph("Status","Off",true) end)
+-- MMV keeps its own Ring Distance, Ring Speed and Shield Distance sliders, which start on a
+-- clean install at: ring 2 out at speed 2, the shield right on you (a slider you'd changed
+-- before from where it used to start carries over). Every toggle starts off, in both games.
+local MMV_OWN={
+    ringDistance={"fireflyMMVRingDistance","fireflyRingDistance",3,2},
+    ringSpeed={"fireflyMMVRingSpeed","fireflyRingSpeed",3,2},
+    shieldGap={"fireflyMMVShieldGap","fireflyShieldGap",0.1,0.01},
+}
+function MMV_OWN.key(field) local entry=MMV_OWN[field];return isMMV and entry[1] or entry[2] end
+function MMV_OWN.default(field) local entry=MMV_OWN[field];return isMMV and entry[4] or entry[3] end
+function MMV_OWN.read(field)
+    local key,old,oldDefault,default=table.unpack(MMV_OWN[field])
+    if not isMMV then return C(old,oldDefault) end
+    local own=C(key)
+    if own~=nil then return own end
+    local previous=C(old)
+    if previous~=nil and previous~=oldDefault and type(previous)==type(default) then return C(key,previous) end
+    return C(key,default)
+end
 local settings={
     shield=C("fireflyProtectShield",false)==true,
     intercept=not isMMV and C("fireflyProtectIntercept",false)==true,
@@ -19767,9 +19989,9 @@ local settings={
     targetName=type(C("fireflyProtectOtherName",""))=="string" and C("fireflyProtectOtherName","") or "",
     distance=math.clamp(tonumber(C("fireflyProtectDistance",2.2)) or 2.2,1,4),
     interceptReach=math.clamp(tonumber(C("fireflyInterceptReach",1)) or 1,1,5),
-    ringDistance=math.clamp(tonumber(C("fireflyRingDistance",3)) or 3,1,8),
-    ringSpeed=math.clamp(tonumber(C("fireflyRingSpeed",3)) or 3,0,10),
-    shieldGap=math.clamp(tonumber(C("fireflyShieldGap",0.1)) or 0.1,0,3),
+    ringDistance=math.clamp(tonumber(MMV_OWN.read("ringDistance")) or MMV_OWN.default("ringDistance"),1,8),
+    ringSpeed=math.clamp(tonumber(MMV_OWN.read("ringSpeed")) or MMV_OWN.default("ringSpeed"),0,10),
+    shieldGap=math.clamp(tonumber(MMV_OWN.read("shieldGap")) or MMV_OWN.default("shieldGap"),0,3),
 }
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
@@ -20000,17 +20222,25 @@ local function onItsOwn(part)
     -- (each check on its own, so one the game can't answer doesn't skip the others)
     local okAssembly,assembly=pcall(function() return part.AssemblyRootPart end)
     if okAssembly and assembly and assembly~=part then return false end
+    -- (only things that hold it to another part count: welds, hinges, ropes, springs... A
+    -- mover that pulls it about, like the jar's own one that keeps the fireflies with you,
+    -- doesn't; nor does anything joining it to your own character, or to something that isn't
+    -- out in the world, like the jar back in your backpack)
     local okJoints,jointed=pcall(function()
+        local mine=LocalPlayer.Character
         for _,joint in ipairs(part:GetJoints()) do
             local other=nil
-            if joint:IsA("JointInstance") or joint:IsA("WeldConstraint") then
+            if joint:IsA("JointInstance") or joint:IsA("WeldConstraint") or joint:IsA("RigidConstraint") then
                 other=joint.Part0==part and joint.Part1 or joint.Part0
-            elseif joint:IsA("Constraint") then
+            elseif joint:IsA("HingeConstraint") or joint:IsA("BallSocketConstraint") or joint:IsA("RopeConstraint")
+                or joint:IsA("RodConstraint") or joint:IsA("SpringConstraint") or joint:IsA("PrismaticConstraint")
+                or joint:IsA("CylindricalConstraint") or joint:IsA("PlaneConstraint") or joint:IsA("UniversalConstraint") then
                 local a,b=joint.Attachment0,joint.Attachment1
                 local pa,pb=a and a.Parent,b and b.Parent
                 other=(pa==part and pb) or (pb==part and pa) or nil
             end
-            if other and other~=part and other:IsA("BasePart") then return true end
+            if other and other~=part and other:IsA("BasePart") and other:IsDescendantOf(workspace)
+                and not (mine and other:IsDescendantOf(mine)) then return true end
         end
         return false
     end)
@@ -20191,6 +20421,13 @@ local function useJar()
             -- (and the jar surely back in the backpack)
             if tool.Parent==character then pcall(function() tool.Parent=backpack end) end
         end
+        -- (your hotbar's order as it is now, put back exactly after)
+        local tools=runtime.AutoGetTools
+        local layout=nil
+        if tools and type(tools.Snapshot)=="function" then
+            local okLayout,result=pcall(tools.Snapshot)
+            if okLayout then layout=result end
+        end
         pcall(function() humanoid:EquipTool(tool) end)
         local deadline=os.clock()+0.6
         while tool.Parent~=character and os.clock()<deadline and not switched do task.wait() end
@@ -20237,15 +20474,29 @@ local function useJar()
                 if jarTrack(trackObject) then pcall(function() trackObject:Stop(0) end) end
             end
             putBack()
-            -- (and Increase Inventory's Auto Get Tools puts your toys back in their slots, so
-            -- the jar never ends up first)
-            local tools=runtime.AutoGetTools
-            if tools and type(tools.RequestOrder)=="function" then pcall(tools.RequestOrder) end
+            -- (and your hotbar put back exactly as it was, and held so until the jar's ready
+            -- again, as the game may rebuild the jar's slot or hand out a new jar later)
+            if tools and type(tools.Hold)=="function" and layout then
+                pcall(tools.Hold,layout,(jar.cooldown or JAR_COOLDOWN)+2)
+            elseif tools and type(tools.Restore)=="function" and layout then
+                pcall(tools.Restore,layout)
+                for _,delay in ipairs({0.15,0.4,0.8,1.5}) do
+                    task.delay(delay,function() pcall(tools.Restore,layout) end)
+                end
+            elseif tools and type(tools.RequestOrder)=="function" then
+                pcall(tools.RequestOrder)
+            end
         else
             -- (it came out late, or not at all: whatever happens it doesn't stay in your hand)
             local late=os.clock()+1
             while tool.Parent~=character and os.clock()<late and not switched do task.wait() end
             if tool.Parent==character then putBack() end
+            if tools and type(tools.Hold)=="function" and layout then
+                pcall(tools.Hold,layout,4)
+            elseif tools and type(tools.Restore)=="function" and layout then
+                pcall(tools.Restore,layout)
+                task.delay(0.5,function() pcall(tools.Restore,layout) end)
+            end
         end
         if watcher then watcher:Disconnect() end
         disabled:Disconnect()
@@ -20337,9 +20588,10 @@ local function riding(part,position)
     return false
 end
 -- thrown knives heading your way, nearest first. A knife counts only while it flies: once
--- it has stopped moving (stuck in something, or blocked) for 0.15 s, sat on a firefly for a
--- moment, or flown longer than any throw, it's done with, so the fireflies are back in place and ready for
--- the next throw. (One that later flies off again by itself is watched again.)
+-- it has stopped moving (stuck in something, or blocked) for 0.3 s (0.6 s while the game
+-- still gives it its speed), sat on a firefly for a moment, or flown longer than any throw,
+-- it's done with, so the fireflies are back in place and ready for the next throw. (One
+-- that later flies off again by itself is watched again.)
 local function knifeThreats(root,dt,reach)
     local farthest=math.min(60*(reach or 1),300)
     local center=root.Position+LIFT
@@ -20351,27 +20603,56 @@ local function knifeThreats(root,dt,reach)
         if not object.Parent or not part.Parent then knives[object]=nil
         else
             local position=part.Position
-            -- (how it really moves: a knife stuck in something can still report the speed it
-            -- was thrown with)
+            -- (how it really moves, frame to frame, and the speed the game gives it, unless
+            -- it's fixed in place: a stuck knife can still report the speed it was thrown with)
             local measured=dt>0 and (position-record.last)/math.max(dt,1/240) or Vector3.zero
-            local velocity=measured.Magnitude>5 and measured or part.AssemblyLinearVelocity
+            local reported=Vector3.zero
+            pcall(function() if not part.Anchored then reported=part.AssemblyLinearVelocity end end)
             record.last=position
-            local speed=velocity.Magnitude
-            if measured.Magnitude>5 then record.lastMove=now end
+            local moving=measured.Magnitude>5
+            if moving then record.lastMove=now end
+            -- (the way it flies: the speed the game gives it when that agrees with how it
+            -- moves (it's smoother), else as it moves, else the speed the game gives it; a little
+            -- smoothed so the line across its path holds still; a sharp turn is taken at once)
+            local raw=nil
+            if moving and reported.Magnitude>5 then
+                raw=reported.Unit:Dot(measured.Unit)>0.7 and reported.Unit or measured.Unit
+            elseif moving then raw=measured.Unit
+            elseif reported.Magnitude>5 then raw=reported.Unit end
+            if raw then
+                if record.heading and record.heading:Dot(raw)>0.9 then
+                    local blended=record.heading:Lerp(raw,0.35)
+                    record.heading=blended.Magnitude>0.01 and blended.Unit or raw
+                else
+                    record.heading=raw;record.length=nil
+                end
+                record.headingAt=now
+            end
+            local speed=math.max(measured.Magnitude,reported.Magnitude)
             local onFirefly=riding(part,position)
             if onFirefly then record.ridingSince=record.ridingSince or now else record.ridingSince=nil end
             local stuck=onFirefly==true or (record.ridingSince~=nil and now-record.ridingSince>0.2)
-            if record.done then
-                if speed>40 and not onFirefly and now-record.done>0.5 then
-                    record.done=nil;record.at=now;record.lastMove=now
+            -- (no movement seen for a moment: done with; out in the open with the game still
+            -- giving it its speed, a short gap in its updates is waited out a little longer,
+            -- but not up against a firefly put in its way: that's it blocked)
+            local stillFor=now-record.lastMove
+            local againstOne=false
+            if reported.Magnitude>5 and stillFor>0.3 then
+                for _,firefly in ipairs(list) do
+                    if blocking[firefly] and (firefly.Position-position).Magnitude<1.2 then againstOne=true;break end
                 end
-            elseif stuck or now-record.lastMove>0.15 or now-record.at>2.5 then
+            end
+            if record.done then
+                if moving and speed>40 and not onFirefly and now-record.done>0.2 then
+                    record.done=nil;record.at=now;record.lastMove=now;record.length=nil
+                end
+            elseif stuck or stillFor>((reported.Magnitude>5 and not againstOne) and 0.6 or 0.3) or now-record.at>2.5 then
                 record.done=now
                 diagnostics.knivesDone=diagnostics.knivesDone+1
             end
             record.flying=not record.done and speed>5
             record.position=position
-            record.direction=speed>5 and velocity.Unit or nil
+            record.direction=speed>5 and record.heading or nil
             if record.fromHand==nil then
                 -- (thrown from close by: right next to another player when it appeared)
                 record.fromHand=false
@@ -20387,8 +20668,7 @@ local function knifeThreats(root,dt,reach)
                 -- out of the hand of someone close by, not moving yet, is taken as aimed at
                 -- you (close up there's no time to wait and see); else the way it points
                 local direction
-                if measured.Magnitude>5 then direction=measured.Unit
-                elseif speed>5 then direction=velocity.Unit
+                if record.heading and now-(record.headingAt or 0)<0.3 then direction=record.heading
                 elseif record.fromHand and now-record.at<0.2 and (center-position).Magnitude>0.5 then direction=(center-position).Unit
                 else direction=part.CFrame.LookVector end
                 local toMe=center-position
@@ -20399,7 +20679,7 @@ local function knifeThreats(root,dt,reach)
                     if along>0 and heading>0.55 then
                         local closest=position+direction*along
                         if (center-closest).Magnitude<6 then
-                            threats[#threats+1]={position=position,closest=closest,direction=direction,along=along}
+                            threats[#threats+1]={position=position,closest=closest,direction=direction,along=along,record=record}
                         end
                     end
                 end
@@ -20899,13 +21179,22 @@ local function step(dt)
             local direction=threat.direction
             local side=direction:Cross(Vector3.yAxis)
             side=side.Magnitude>0.01 and side.Unit or Vector3.xAxis
+            -- (rows evenly along the path from 2.2 studs in front of you to a little short of
+            -- where the knife was first seen; each row three abreast: on the path and either
+            -- side of it. They stay put while it comes, so it flies into them)
+            local record=threat.record
             local length=math.clamp(threat.along-2.2,1,14*reach)
-            local count=math.min(#free,math.ceil(14*reach))
-            local rows=math.max(1,math.ceil(count/3))
-            local LANES={0,0.35,-0.35}
+            if record then
+                if not record.length or record.reach~=reach then record.length=length;record.reach=reach end
+                length=math.max(record.length,1)
+            end
+            local LANES={0,0.45,-0.45}
+            local count=math.min(#free,math.ceil(7*reach)*#LANES)
+            local rows=math.max(1,math.ceil(count/#LANES))
             for n=1,count do
-                local back=2.2+math.floor((n-1)/3)*(length/math.max(1,rows-1))
-                take(threat.closest-direction*math.min(back,2.2+length)+side*LANES[(n-1)%3+1])
+                local row=math.floor((n-1)/#LANES)
+                local back=2.2+row*(length/rows)
+                take(threat.closest-direction*back+side*LANES[(n-1)%#LANES+1])
             end
             kind="intercepting a knife"
         end
@@ -21329,14 +21618,14 @@ end
 add("Auto Use Firefly Jar","autoJar")
 if isMMV then
     section:AddSlider("Ring Distance",1,8,settings.ringDistance,function(value)
-        settings.ringDistance=math.clamp(tonumber(value) or 3,1,8);SetCfg("fireflyRingDistance",settings.ringDistance)
+        settings.ringDistance=math.clamp(tonumber(value) or MMV_OWN.default("ringDistance"),1,8);SetCfg(MMV_OWN.key("ringDistance"),settings.ringDistance)
     end)
     section:AddSlider("Ring Speed",0,10,settings.ringSpeed,function(value)
-        settings.ringSpeed=math.clamp(tonumber(value) or 3,0,10);SetCfg("fireflyRingSpeed",settings.ringSpeed)
+        settings.ringSpeed=math.clamp(tonumber(value) or MMV_OWN.default("ringSpeed"),0,10);SetCfg(MMV_OWN.key("ringSpeed"),settings.ringSpeed)
     end)
     -- (how far the shield sits off your body while it's shielding: 0 is right on you)
     section:AddSlider("Shield Distance",0.01,3,settings.shieldGap,function(value)
-        settings.shieldGap=math.clamp(tonumber(value) or 0.1,0,3);SetCfg("fireflyShieldGap",settings.shieldGap)
+        settings.shieldGap=math.clamp(tonumber(value) or MMV_OWN.default("shieldGap"),0,3);SetCfg(MMV_OWN.key("shieldGap"),settings.shieldGap)
     end)
 else
     -- (1 to 4 studs, in steps of a hundredth)
@@ -21392,7 +21681,9 @@ runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
-    settings.distance,settings.ringDistance,settings.ringSpeed,settings.interceptReach,settings.shieldGap=2.2,3,3,1,0.1
+    settings.distance,settings.interceptReach=2.2,1
+    settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
+    settings.shieldGap=MMV_OWN.default("shieldGap")
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
     stop()
     for _,part in ipairs(table.clone(list)) do forget(part) end
@@ -22924,6 +23215,87 @@ RequestOrder=function()
     if not autoGetTools or not alive or not runtimeAlive then return end
     toyOrderDirty=true
     pcall(requestRecovery,false)
+end,
+-- the hotbar's order, slot by slot (by the tool in it, or by its name when the game has
+-- handed out a new one): taken before Firefly Protection's Auto Use Firefly Jar takes the jar
+-- out, and held after it's back, so using the jar never moves anything in your hotbar (also
+-- when the game rebuilds a slot for it or renumbers the slots a while later)
+Snapshot=function()
+    local layout={byTool={},byName={},names={}}
+    for reference in pairs(slotReferences) do
+        local okRead,tool,slot=pcall(function() return reference.Value,reference.Parent end)
+        if okRead and typeof(tool)=="Instance" and slot and slot:IsA("GuiObject") then
+            layout.byTool[tool]=slot.LayoutOrder
+            layout.names[tool.Name]=(layout.names[tool.Name] or 0)+1
+            layout.byName[tool.Name]=slot.LayoutOrder
+        end
+    end
+    return layout
+end,
+Restore=function(layout,quiet)
+    if type(layout)~="table" or type(layout.byTool)~="table" or not alive or not runtimeAlive then return end
+    local changed=false
+    for reference in pairs(slotReferences) do
+        pcall(function()
+            local tool,slot=reference.Value,reference.Parent
+            if typeof(tool)~="Instance" or not slot or not slot.Parent or orderedSlots[slot] then return end
+            local order=layout.byTool[tool]
+            if order==nil and layout.names[tool.Name]==1 then order=layout.byName[tool.Name] end
+            if order~=nil and slot.LayoutOrder~=order then slot.LayoutOrder=order;changed=true end
+        end)
+    end
+    if autoGetTools and (changed or not quiet) then toyOrderDirty=true;pcall(requestRecovery,false) end
+end,
+Hold=function(layout,seconds)
+    local export=env.VisualsV2Runtime.AutoGetTools
+    if type(layout)~="table" or type(export)~="table" or not alive or not runtimeAlive then return end
+    -- (a newer hold takes over from the one before)
+    if export.StopHold then pcall(export.StopHold) end
+    local connections={}
+    local watched={}
+    local queued,stopped=false,false
+    local function apply()
+        queued=false
+        if not stopped and alive and runtimeAlive then pcall(export.Restore,layout,true) end
+    end
+    local function queue()
+        if queued or stopped then return end
+        queued=true
+        task.defer(apply)
+    end
+    local function watch(reference)
+        if watched[reference] then return end
+        watched[reference]=true
+        connections[#connections+1]=reference:GetPropertyChangedSignal("Value"):Connect(queue)
+        local slot=reference.Parent
+        if slot and slot:IsA("GuiObject") then
+            connections[#connections+1]=slot:GetPropertyChangedSignal("LayoutOrder"):Connect(queue)
+        end
+    end
+    local function stop()
+        if stopped then return end
+        stopped=true
+        for _,connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
+        table.clear(connections)
+        if export.StopHold==stop then export.StopHold=nil end
+    end
+    export.StopHold=stop
+    for reference in pairs(slotReferences) do pcall(watch,reference) end
+    local gui=observedGui
+    if gui then
+        connections[#connections+1]=gui.DescendantAdded:Connect(function(object)
+            if not object:IsA("ObjectValue") then return end
+            task.defer(function()
+                if stopped then return end
+                if slotReferences[object] then pcall(watch,object) end
+                queue()
+            end)
+        end)
+    end
+    -- (a new life's hotbar is the game's own: not held)
+    connections[#connections+1]=player.CharacterAdded:Connect(stop)
+    pcall(export.Restore,layout)
+    task.delay(tonumber(seconds) or 6,stop)
 end}
 local inventoryToggle=addToggle(section,"Increase Inventory",inventoryEnabled,function(state)
     inventoryEnabled=state
