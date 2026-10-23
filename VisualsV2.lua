@@ -21083,6 +21083,7 @@ local MMV_FAR=80            -- a gun holder behind a wall this far away: just th
 local MAX_FIREFLIES=90
 local NEAR=40               -- a murderer this close is shielded against even behind a wall
 local RANGE=200             -- further than this an attacker isn't a danger yet
+local MURDERER_RANGE=250    -- (MMV) a murderer in sight this close gets the bombs turned to them
 local MOUSE_RANGE=50        -- how far from you the mouse swarm may go
 local LIFT=Vector3.new(0,0.6,0)
 local MARK="VisualsV2_Firefly"
@@ -21091,6 +21092,9 @@ local list={}
 local loop,placeLoop,watchAdded,watchRemoved,autoLoop
 local knives={}
 local smoothDirection=nil
+-- (MMV, the murderer and the one with the gun both after you: the way the bombs face, turned to
+-- the murderer on their own while the fireflies stay on the gun)
+local smoothBombDirection=nil
 local murdererNotice=-math.huge
 local diagnostics={fireflies=0,owned=0,threat="none",mode="idle",active=false,intercepts=0,jarUses=0,jarAttempts=0,skippedSlots=0,knivesDone=0}
 
@@ -21265,15 +21269,19 @@ local pinned=setmetatable({}, {__mode="k"})
 -- (the ways of throwing it: "remote", its Remote told to put it right in front of your feet,
 -- Bomb Jump's way; "tap", the toy pressed and let go in your hand, the way you throw it
 -- yourself; "screen", a tap on the screen where nothing on it is, with the toy in your hand,
--- never on a touch screen. Tried in turn, the same order every time (see throwOrder), until one
--- brings a bomb. Never given up on.)
+-- never on a touch screen. Tried in turn (see throwOrder; for the Gold Bomb, the way that last
+-- brought one first), until one brings a bomb. Never given up on.)
 -- (each toy: its own cooldown, shared by every bomb thrown with it; MMV's Gold Bomb is ready
--- again 5 s after a throw, so several of it can be out at once)
+-- again 5 s after a throw, so several of it can be out at once. For the Gold Bomb, the way that
+-- last worked with it is kept between sessions; the Fake Bomb keeps its fixed order)
 local function newKit(config)
-    return {name=config.name,toolName=config.toolName,toy=config.toy,cooldown=config.cooldown,readyAt=0,failures=0}
+    local saved=config.wayKey and C(config.wayKey) or nil
+    if saved~="tap" and saved~="remote" and saved~="screen" then saved=nil end
+    return {name=config.name,toolName=config.toolName,toy=config.toy,cooldown=config.cooldown,readyAt=0,failures=0,
+        wayKey=config.wayKey,way=saved}
 end
 local FAKE_KIT=newKit({name="Fake Bomb",toolName="fakebomb",toy="FakeBomb",cooldown=22})
-local GOLD_KIT=newKit({name="Gold Bomb",toolName="goldbomb",toy="GoldBomb",cooldown=5})
+local GOLD_KIT=newKit({name="Gold Bomb",toolName="goldbomb",toy="GoldBomb",cooldown=5,wayKey="fireflyMMV_GoldBombWay"})
 -- (one slot for each bomb kept out: the Fake Bomb, and in MMV up to three Gold Bombs (three
 -- bombs at most in all: the Fake Bomb takes one of the places when it's on))
 local MAX_BOMBS=3
@@ -21305,15 +21313,22 @@ end
 -- The ways of throwing it, in turn until one brings a bomb: MM2, its Remote told to put it right
 -- in front of your feet (Bomb Jump's and Bomb Fling's way: you're the nearest one, so the game
 -- hands it to you), then the toy pressed and let go in your hand; MMV the other way round (a tap
--- there hands you the bomb). A tap on the screen where nothing on it is last, never on a touch
+-- there hands you the bomb), except MMV's Gold Bomb: its Remote first, the way Gold Bomb Jump
+-- throws it at once (a tap with it in hand doesn't bring one, so the toy sat in your hand for a
+-- second before every throw). A tap on the screen where nothing on it is last, never on a touch
 -- screen (a mouse click there takes your joystick and jump button away, so you can't move).
+-- For the Gold Bomb, whichever way last brought one goes first.
 local function touchOnly()
     local ok,touch=pcall(function() return UserInput.TouchEnabled and not UserInput.MouseEnabled end)
     return ok and touch==true
 end
-local function throwOrder()
+local function throwOrder(kit)
     local order=isMMV and {"tap","remote"} or {"remote","tap"}
+    if kit==GOLD_KIT then order={"remote","tap"} end
     if not touchOnly() then order[#order+1]="screen" end
+    local way=kit and kit.way
+    local at=way and table.find(order,way)
+    if at and at>1 then table.remove(order,at);table.insert(order,1,way) end
     return order
 end
 local function bombAlive(part)
@@ -21686,8 +21701,10 @@ end
 -- ---------------------------------------------------------------- walls and attackers
 local rayParams=RaycastParams.new()
 rayParams.FilterType=Enum.RaycastFilterType.Exclude
--- (what the wall checks look through: everyone's character, the fireflies, the camera;
--- only rebuilt when one of those changes, or once a second, not every frame)
+-- (what the wall checks look through: everyone's character, the fireflies, the bombs kept out,
+-- the camera; only rebuilt when one of those changes, or once a second, not every frame. The
+-- bombs too: one in the shield is right in the way of the one it shields from, so they were
+-- taken for out of sight behind it, and the shield turned away from them)
 local filterKey,filterAt="",-math.huge
 local function refreshFilter()
     local ignore={}
@@ -21697,11 +21714,23 @@ local function refreshFilter()
     end
     key[#key+1]=tostring(#list);key[#key+1]=tostring(list[#list])
     for part in pairs(caps) do key[#key+1]=tostring(part) end
+    for index,slot in ipairs(SLOTS) do if slot.part then key[#key+1]="b"..index end end
     key=table.concat(key,"|")
     if key==filterKey and os.clock()-filterAt<1 then return end
     filterKey,filterAt=key,os.clock()
     for _,part in ipairs(list) do ignore[#ignore+1]=part end
     for part in pairs(caps) do ignore[#ignore+1]=part end
+    for _,slot in ipairs(SLOTS) do
+        local part=slot.part
+        if part then
+            ignore[#ignore+1]=part
+            -- (a bomb in several pieces, as a model of its own)
+            local holder=part.Parent
+            if holder and holder~=workspace and (holder:IsA("Model") or holder:IsA("Tool")) and holder.Name:lower():find("bomb",1,true) then
+                ignore[#ignore+1]=holder
+            end
+        end
+    end
     local camera=workspace.CurrentCamera
     if camera then ignore[#ignore+1]=camera end
     rayParams.FilterDescendantsInstances=ignore
@@ -22120,21 +22149,26 @@ local function aroundCells(count,width,height)
     return cells
 end
 -- (round every bomb in the shield: the frame round all of them together (as wide as the widest,
--- from the lowest one's bottom to the highest one's top), and a row across each gap between one
--- and the next too, if there's room for one just clear of both)
+-- or the pair side by side, from the lowest one's bottom to the highest one's top), a row across
+-- each gap between one and the next too, if there's room for one just clear of both, and with
+-- bombs side by side (three in a triangle) a few in the corners of the frame no bomb covers)
 local holeCellsFor={}
 local function holeCells(count,holes)
     local keys={tostring(count)}
-    for _,hole in ipairs(holes) do keys[#keys+1]=string.format("%.2f,%.2f,%.2f",hole.width,hole.height,hole.y) end
+    for _,hole in ipairs(holes) do keys[#keys+1]=string.format("%.2f,%.2f,%.2f,%.2f",hole.width,hole.height,hole.y,hole.x or 0) end
     local key=table.concat(keys,"|")
     local cached=holeCellsFor[key]
     if cached then return cached end
-    local halfWidth,low,high=0,math.huge,-math.huge
+    local left,right,low,high=math.huge,-math.huge,math.huge,-math.huge
+    local sideBySide=false
     for _,hole in ipairs(holes) do
-        halfWidth=math.max(halfWidth,hole.width/2)
+        local x=hole.x or 0
+        if math.abs(x)>0.01 then sideBySide=true end
+        left=math.min(left,x-hole.width/2);right=math.max(right,x+hole.width/2)
         low=math.min(low,hole.y-hole.height/2);high=math.max(high,hole.y+hole.height/2)
     end
-    local mid=(low+high)/2
+    local halfWidth=(right-left)/2
+    local midX,mid=(left+right)/2,(low+high)/2
     -- (the gaps between one bomb and the next, each with room for a row just clear of both)
     local sorted=table.clone(holes)
     table.sort(sorted,function(a,b) return a.y<b.y end)
@@ -22143,25 +22177,51 @@ local function holeCells(count,holes)
         local gapLow,gapHigh=sorted[k].y+sorted[k].height/2,sorted[k+1].y-sorted[k+1].height/2
         if gapHigh-gapLow>=2*FRAME_MARGIN then gaps[#gaps+1]=(gapLow+gapHigh)/2 end
     end
+    -- (side by side: the spots inside the frame just clear of every bomb (each taken as round), on a
+    -- small grid; for three in a triangle, the two lower corners beside the one under the pair)
+    local pockets={}
+    if sideBySide then
+        local step=SHIELD.spacing*0.6
+        for y=low+FRAME_MARGIN,high-FRAME_MARGIN+1e-6,step do
+            for x=left+FRAME_MARGIN,right-FRAME_MARGIN+1e-6,step do
+                local free=true
+                for _,hole in ipairs(holes) do
+                    local dx=(x-(hole.x or 0))/(hole.width/2+FRAME_MARGIN)
+                    local dy=(y-hole.y)/(hole.height/2+FRAME_MARGIN)
+                    if dx*dx+dy*dy<1 then free=false;break end
+                end
+                if free then pockets[#pockets+1]=Vector2.new(x,y) end
+            end
+        end
+    end
     local frameWidth=2*(halfWidth+FRAME_MARGIN)
-    local inFrame,inGap=count,0
+    local inFrame,inGap,inPocket=count,0,0
     if #gaps>0 and count>=8 then
         local perimeter=2*(2*halfWidth+(high-low))+8*FRAME_MARGIN
         inGap=math.floor(count*frameWidth*#gaps/(perimeter+frameWidth*#gaps)+0.5)
         inFrame=count-inGap
         if inFrame<4 then inFrame=math.min(count,4);inGap=count-inFrame end
     end
+    -- (about a fifth of the frame's to the corners, the frame keeping 4 at least)
+    if #pockets>0 and count>=8 then
+        inPocket=math.min(#pockets,math.floor(inFrame*0.2+0.5),math.max(inFrame-4,0))
+        inFrame=inFrame-inPocket
+    end
     local cells={}
-    for _,cell in ipairs(aroundCells(inFrame,2*halfWidth,high-low)) do cells[#cells+1]=Vector2.new(cell.X,cell.Y+mid) end
+    for _,cell in ipairs(aroundCells(inFrame,2*halfWidth,high-low)) do cells[#cells+1]=Vector2.new(cell.X+midX,cell.Y+mid) end
     -- (the rest shared between the gaps, as evenly as they go)
     for index,gapY in ipairs(gaps) do
         local here=math.floor(inGap/#gaps)+(index<=inGap%#gaps and 1 or 0)
-        for k=1,here do cells[#cells+1]=Vector2.new(-frameWidth/2+frameWidth*k/(here+1),gapY) end
+        for k=1,here do cells[#cells+1]=Vector2.new(midX-frameWidth/2+frameWidth*k/(here+1),gapY) end
     end
+    -- (and the corners' share spread evenly over their spots)
+    for k=1,inPocket do cells[#cells+1]=pockets[math.floor((k-0.5)*#pockets/inPocket)+1] end
     holeCellsFor[key]=cells
     return cells
 end
-local function shieldSpots(count,root,facing,time,holes)
+-- (minOut: at least that far out, as the bombs on their own are when they face much the same
+-- way as the fireflies' grid, so they're past it and never in it)
+local function shieldSpots(count,root,facing,time,holes,minOut)
     local shieldCells=holes and holeCells(count,holes) or squareCells(math.min(count,SHIELD.rows*SHIELD.columns))
     -- how far your body reaches toward them, measured in your own facing
     local size=root.Size
@@ -22194,6 +22254,7 @@ local function shieldSpots(count,root,facing,time,holes)
         for _,hole in ipairs(holes) do thick=math.max(thick,hole.thick);tall=math.max(tall,math.abs(hole.y)+hole.height/2) end
         base=math.max(base,math.max(reach,torsoReach)+thick/2+math.abs(facing.Y)*tall+0.05)
     end
+    if minOut then base=math.max(base,minOut) end
     local spots={}
     for index=1,count do
         local cell=shieldCells[(index-1)%#shieldCells+1]
@@ -22203,13 +22264,14 @@ local function shieldSpots(count,root,facing,time,holes)
         local out=flatFacing*(base+layer*0.3)
         spots[#spots+1]=out+right*(cell.X+stagger)+up*(cell.Y+stagger)+Vector3.new(0,SHIELD.height,0)-LIFT+jiggle
     end
-    -- (and its middle, where the bombs go, and which way is up in it)
-    return spots,flatFacing*base+Vector3.new(0,SHIELD.height,0)-LIFT,up
+    -- (and its middle, where the bombs go, which ways are up and across in it, and how far out it is)
+    return spots,flatFacing*base+Vector3.new(0,SHIELD.height,0)-LIFT,up,right,base
 end
 -- (each bomb in the shield: its broad side's size as it looks (its mesh's scale counted, so the
--- fireflies go round all of it), and where it goes up or down from your middle: one alone at
--- your middle; two, the first at your upper body and the other at your legs; three, at your
--- upper body, your middle and your legs; never overlapping)
+-- fireflies go round all of it), and where it goes from your middle: one alone at your middle;
+-- two, the first at your upper body and the other at your legs, never overlapping; three, an
+-- upside-down triangle: two side by side at your chest, the third nested in close under the
+-- middle of them at your waist. None of them ever down in the ground)
 local function bombLook(part)
     local size=part.Size
     pcall(function()
@@ -22227,7 +22289,7 @@ local function bombHoles(slots,root)
     local holes={}
     for _,slot in ipairs(slots) do
         local width,height,thick=bombLook(slot.part)
-        holes[#holes+1]={width=width,height=height,thick=thick,y=0}
+        holes[#holes+1]={width=width,height=height,thick=thick,x=0,y=0}
     end
     if #holes>=2 then
         local character=root.Parent
@@ -22237,21 +22299,33 @@ local function bombHoles(slots,root)
         if torso and torso:IsA("BasePart") then upper=math.clamp(torso.Position.Y-root.Position.Y,-0.5,1.5) end
         local drop=3
         pcall(function() if humanoid and humanoid.RigType==Enum.HumanoidRigType.R15 then drop=root.Size.Y/2+humanoid.HipHeight end end)
-        local top,bottom=holes[1],holes[#holes]
-        top.y,bottom.y=upper,-(drop+root.Size.Y/2)/2
-        -- (never overlapping: spread apart evenly round their middle when they would)
-        local need=0
-        for k=1,#holes-1 do need=need+(holes[k].height+holes[k+1].height)/2+0.05 end
-        if top.y-bottom.y<need then
-            local middle=(top.y+bottom.y)/2
-            top.y,bottom.y=middle+need/2,middle-need/2
-        end
-        -- (three: the one between at your middle, the gaps either side of it even)
         if #holes==3 then
-            local between=holes[2]
-            local gap=((top.y-top.height/2)-(bottom.y+bottom.height/2)-between.height)/2
-            between.y=bottom.y+bottom.height/2+gap+between.height/2
+            -- (three: an upside-down triangle, close together (0.04 apart): the first two side by
+            -- side, the third under the middle of them, nested in as round things stack, the
+            -- whole of it centred a little over your torso's middle)
+            local a,b,c=holes[1],holes[2],holes[3]
+            local spread=(a.width+b.width)/2+0.04
+            a.x,b.x=-spread/2,spread/2
+            local apart=(math.max(a.width+a.height,b.width+b.height)+c.width+c.height)/4+0.04
+            local rise=math.sqrt(math.max(apart*apart-(spread/2)^2,(apart/2)^2))
+            local middle=math.clamp(upper*0.5,0,0.8)+0.2
+            a.y,b.y,c.y=middle+rise/2,middle+rise/2,middle-rise/2
+        else
+            local top,bottom=holes[1],holes[#holes]
+            top.y,bottom.y=upper,-(drop+root.Size.Y/2)/2
+            -- (never overlapping: spread apart evenly round their middle when they would)
+            local need=0
+            for k=1,#holes-1 do need=need+(holes[k].height+holes[k+1].height)/2+0.05 end
+            if top.y-bottom.y<need then
+                local middle=(top.y+bottom.y)/2
+                top.y,bottom.y=middle+need/2,middle-need/2
+            end
         end
+        -- (never down in the ground: all of them raised together if the lowest would be)
+        local lowest=math.huge
+        for _,hole in ipairs(holes) do lowest=math.min(lowest,hole.y-hole.height/2) end
+        local floor=-drop+0.15
+        if lowest<floor then for _,hole in ipairs(holes) do hole.y=hole.y+(floor-lowest) end end
     end
     return holes
 end
@@ -22922,7 +22996,7 @@ local function step(dt)
         return knifeThreats(body,1)
     end
     local near=nearOf(me,guard and guard.player)
-    -- (MMV's Protect Against Murderer: whoever has the knife, within 200 studs, nearest first)
+    -- (MMV's Protect Against Murderer: whoever has the knife, within 250 studs, nearest first)
     local murderersNear={}
     if isMMV and selfMode.murderer then
         local from=me.Position+LIFT
@@ -22930,7 +23004,7 @@ local function step(dt)
             if plr~=LocalPlayer and (role(plr)=="murderer" or hasTool(plr,"knife")) then
                 local other=aliveRoot(plr)
                 local distance=other and (other.Position-me.Position).Magnitude
-                if other and distance<=RANGE then
+                if other and distance<=MURDERER_RANGE then
                     murderersNear[#murderersNear+1]={player=plr,root=other,distance=distance,seen=clear(from,other.Position+Vector3.new(0,1,0))}
                 end
             end
@@ -23178,45 +23252,76 @@ local function step(dt)
     end
     if isMMV then
         -- who the shield turns to: the murderer (Protect Against Murderer) first, then the one
-        -- with the gun (Gun Shield), while they're after you: in sight, or near even behind a
-        -- wall (40 studs for the knife, 80 for the gun)
+        -- with the gun (Gun Shield), while they're after you: in sight (the murderer from up to
+        -- 250 studs), or near even behind a wall (40 studs for the knife, 80 for the gun). Both
+        -- after you, it's split: the bombs (they stop knives) turn to the murderer on their own,
+        -- and the fireflies (they only stop shots) keep their usual grid on the one with the gun.
         local gunHolder=mode.shield and near[1] or nil
         local gunPressing=gunHolder~=nil and (gunHolder.seen or gunHolder.distance<MMV_FAR)
         local murderer=mode.murderer and murderersNear[1] or nil
         local murdererPressing=murderer~=nil and (murderer.seen or murderer.distance<NEAR)
+        local split=murdererPressing and gunPressing
         local from=nil
-        if murdererPressing then from=murderer
+        if split then from=gunHolder
+        elseif murdererPressing then from=murderer
         elseif gunPressing then from=gunHolder end
-        if from then
-            local aim=from.root.Position+Vector3.new(0,1.5,0)
-            -- the grid turned to them, wherever they are, tilted up or down to them and
-            -- following them smoothly, right against your body on that side
-            local direction=aim-center
+        -- (the way to them from you, tilted up or down to them, 60 degrees at most)
+        local function facingTo(threat)
+            local direction=threat.root.Position+Vector3.new(0,1.5,0)-center
             local horizontal=flat(direction) or root.CFrame.LookVector
             local pitch=math.clamp(math.atan2(direction.Y,Vector3.new(direction.X,0,direction.Z).Magnitude),math.rad(-60),math.rad(60))
-            local facing=(horizontal*math.cos(pitch)+Vector3.new(0,math.sin(pitch),0)).Unit
+            return (horizontal*math.cos(pitch)+Vector3.new(0,math.sin(pitch),0)).Unit
+        end
+        if from then
+            -- the grid turned to them, wherever they are, following them smoothly, right against
+            -- your body on that side
+            local facing=facingTo(from)
             smoothDirection=smoothDirection and smoothDirection:Lerp(facing,math.clamp(FOLLOW*dt,0,1)) or facing
             if smoothDirection.Magnitude<0.01 then smoothDirection=facing end
             -- (the bombs out in the middle of the shield the whole time it's up, their broad
-            -- sides to them, still, one above another: one alone at your middle; two, at your
-            -- upper body and your legs; three, at your upper body, your middle and your legs;
-            -- every firefly in a closed frame round them in the same plane (and across the gaps
-            -- between them), none in front of them or behind. A knife at you: all of them where
-            -- it would hit you)
+            -- sides to them, still: one alone at your middle; two, at your upper body and your
+            -- legs; three, an upside-down triangle at your chest and waist; every firefly in a
+            -- closed frame round them in the same plane (and across the gaps between them), none
+            -- in front of them or behind. Split, the bombs are a shield of their own on the
+            -- murderer's side (past the grid if that's much the same side), the fireflies the
+            -- usual grid. A knife at you: all of them where it would hit you)
             local holes=#bombs>0 and bombHoles(bombs,root) or nil
-            local middle,up
-            spots,middle,up=shieldSpots(count,root,smoothDirection.Unit,clock,holes)
-            if holes then
-                if not knifeStack then
-                    for index,slot in ipairs(bombs) do
-                        bombPlaces[slot]={at=center+middle+up*holes[index].y,facing=smoothDirection.Unit}
+            local bombMiddle,bombUp,bombRight,bombFacing=nil,nil,nil,smoothDirection.Unit
+            if split then
+                local gridSpots,gridMiddle,gridUp,gridRight,gridBase=shieldSpots(count,root,smoothDirection.Unit,clock,nil)
+                spots=gridSpots
+                if holes then
+                    local toMurderer=facingTo(murderer)
+                    smoothBombDirection=(smoothBombDirection or smoothDirection):Lerp(toMurderer,math.clamp(FOLLOW*dt,0,1))
+                    if smoothBombDirection.Magnitude<0.01 then smoothBombDirection=toMurderer end
+                    bombFacing=smoothBombDirection.Unit
+                    local minOut=nil
+                    local bombsWay,gridWay=flat(bombFacing),flat(smoothDirection)
+                    if bombsWay and gridWay and bombsWay:Dot(gridWay)>0.5 then
+                        local thick=0
+                        for _,hole in ipairs(holes) do thick=math.max(thick,hole.thick) end
+                        minOut=gridBase+thick/2+0.3
                     end
+                    local bombSpots
+                    bombSpots,bombMiddle,bombUp,bombRight=shieldSpots(0,root,bombFacing,clock,holes,minOut)
+                else
+                    smoothBombDirection=nil
                 end
-                diagnostics.bombMiddle=true
+                kind=kind or ("bombs on the murderer, "..murderer.player.Name..", fireflies on "..gunHolder.player.Name)
+            else
+                smoothBombDirection=nil
+                spots,bombMiddle,bombUp,bombRight=shieldSpots(count,root,smoothDirection.Unit,clock,holes)
+                if holes then diagnostics.bombMiddle=true end
+                kind=kind or ((from==murderer and "shielding from the murderer, " or "shielding from ")..from.player.Name)
+            end
+            if holes and bombMiddle and not knifeStack then
+                for index,slot in ipairs(bombs) do
+                    local hole=holes[index]
+                    bombPlaces[slot]={at=center+bombMiddle+bombUp*hole.y+bombRight*hole.x,facing=bombFacing}
+                end
             end
             grid=true
             active=true
-            kind=kind or ((from==murderer and "shielding from the murderer, " or "shielding from ")..from.player.Name)
         elseif gunHolder and count>0 then
             if pointAt then
                 -- (hidden and far: not needed, so Follow Mouse while you point)
@@ -23319,7 +23424,7 @@ local function step(dt)
     end
     kind=kind or "idle"
     if guard then kind="protecting "..guard.player.Name..": "..kind end
-    if not grid then smoothDirection=nil end
+    if not grid then smoothDirection=nil;smoothBombDirection=nil end
     -- The bombs: over your head, turning as fast as Fake Bomb Spin Speed says (two or three
     -- side by side round it), whatever the fireflies are doing, until a knife is thrown at you
     -- (MM2: the Fake Bomb then put ahead of the fireflies, its broad side to the knife, still;
@@ -23710,18 +23815,26 @@ local function throwBomb(slot)
         end
         return slot.found
     end
+    -- (the Remote as the way that last brought this toy's bomb: fired the moment the toy is in your
+    -- hand and the toy put straight back, the way Gold Bomb Jump throws it, the bomb then looked
+    -- for with your hands free; if that ever doesn't bring one, it's given its moment from then on)
+    local order=throwOrder(kit)
+    local quick=remote~=nil and kit.way=="remote" and order[1]=="remote" and not kit.patient
+    slot.quick=nil
     pcall(function() tool.Parent=character end)
     RunService.Heartbeat:Wait()
-    -- (a moment in your hand first, as when you take it out to throw it; MM2's toys say they're
-    -- not enabled while they're put away, so until the game has it enabled in your hand, half a
-    -- second at most)
-    task.wait(0.1)
-    local enabledBy=os.clock()+0.5
-    while tool.Enabled==false and os.clock()<enabledBy do task.wait(0.03) end
+    if not quick then
+        -- (a moment in your hand first, as when you take it out to throw it (a shorter one with a
+        -- way that has worked); MM2's toys say they're not enabled while they're put away, so
+        -- until the game has it enabled in your hand, half a second at most)
+        task.wait(kit.way and 0.05 or 0.1)
+        local enabledBy=os.clock()+0.5
+        while tool.Enabled==false and os.clock()<enabledBy do task.wait(0.03) end
+    end
     -- (the ways in turn, each given a moment to bring a bomb, until one does; the toy kept in
     -- your hand meanwhile, as the game wants it for a throw, and put away the moment it's out)
     local thrownBy=nil
-    for _,name in ipairs(throwOrder()) do
+    for _,name in ipairs(order) do
         if lookNow() or tool.Parent~=character then break end
         local tried=false
         if name=="tap" then
@@ -23737,6 +23850,7 @@ local function throwBomb(slot)
         end
         if tried then
             thrownBy=name
+            if quick and name=="remote" then slot.quick=true;RunService.Heartbeat:Wait();break end
             local deadline=os.clock()+(name=="tap" and 1 or name=="remote" and 0.8 or 1.2)
             while os.clock()<deadline and not lookNow() do task.wait(0.03) end
             if lookNow() then break end
@@ -23770,7 +23884,7 @@ local function throwBomb(slot)
     slot.found=nil;slot.anyNew=nil;slot.throwAt=nil
     if not found then
         local seen=finder and finder.lastSeen
-        return nil,"the thrown bomb wasn't found"..(seen and (" (near you: "..tostring(seen)..")") or "")
+        return nil,"the thrown bomb wasn't found"..(seen and (" (near you: "..tostring(seen)..")") or ""),thrownBy
     end
     -- (the toy ready again after its own wait)
     kit.readyAt=os.clock()+kit.cooldown
@@ -23804,7 +23918,7 @@ local function bombLanded(slot,object,ours)
     end
 end
 -- (none out, the toy ready, nothing else using your hands, Auto Get Tools done (3 s at most):
--- one thrown out, looked at every quarter of a second)
+-- one thrown out, looked at every tenth of a second)
 -- (the jar first: no bomb thrown out (holding the toy up) when Auto Use Firefly Jar is about
 -- to use the jar, so the fireflies are never left to run out)
 local function jarDueSoon()
@@ -23904,7 +24018,7 @@ local function slotStep(slot,now,character,inHand)
     end
     if slot.deploying or slot.searching then return end
     if now<(slot.checkAt or 0) then return end
-    slot.checkAt=now+0.25
+    slot.checkAt=now+0.1
     local root=character and character:FindFirstChild("HumanoidRootPart")
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid or humanoid.Health<=0 then bombWhy(slot,"no character");return end
@@ -23956,6 +24070,17 @@ local function slotStep(slot,now,character,inHand)
         local ok,part,reason,thrownBy=pcall(throwBomb,slot)
         slot.deploying=false;slot.searching=false
         slot.throwAt=nil
+        local quick=slot.quick;slot.quick=nil
+        if not kit.wayKey then
+            -- (the Fake Bomb: its ways always in the same order)
+        elseif ok and typeof(part)=="Instance" and thrownBy and kit.way~=thrownBy then
+            -- (the way that brought it goes first from now on, kept for next time too)
+            kit.way=thrownBy;SetCfg(kit.wayKey,thrownBy)
+        elseif ok and typeof(part)~="Instance" and thrownBy and thrownBy==kit.way then
+            -- (the way that worked before brought nothing: put straight back, it's given its
+            -- moment from now on; given its moment, the ways are tried in turn again)
+            if quick then kit.patient=true else kit.way=nil;SetCfg(kit.wayKey,nil) end
+        end
         if ok and typeof(part)=="Instance" and bombAlive(part) and slotWanted(slot) and bombsActive() and runtimeAlive and not bombFlinging() then
             kit.failures=0
             if slot==fakeBomb then diagnostics.bombThrownBy=thrownBy else diagnostics.goldThrownBy=thrownBy end
@@ -24057,7 +24182,7 @@ local function stop()
         local saved=fireflies[part]
         if saved and part.Parent then pcall(function() part.CanCollide=saved.collide end) end
     end
-    smoothDirection=nil
+    smoothDirection=nil;smoothBombDirection=nil
     for part in pairs(caps) do forgetCap(part) end
     if status then pcall(function() status:SetValue("Off") end) end
 end
@@ -24172,11 +24297,19 @@ function area.update()
         pcall(function() ring.AlwaysOnTop=false;ring.ZIndex=0 end)
         -- (a ring if this Roblox can make one; else a flat circle on the ground)
         area.hollow=pcall(function() ring.InnerRadius=0 end)
+        -- (gethui can hand back something that isn't an Instance on some executors (a string on
+        -- Delta), which stopped the rest of the add-on loading in MM2: only a real Instance is
+        -- used, else CoreGui, else the camera)
         local parent=nil
-        pcall(function()
-            parent=(type(gethui)=="function" and gethui()) or (type(env.gethui)=="function" and env.gethui()) or game:GetService("CoreGui")
-        end)
-        ring.Parent=parent or workspace.CurrentCamera
+        local hidden=type(gethui)=="function" and gethui or env.gethui
+        if type(hidden)=="function" then
+            local ok,container=pcall(hidden)
+            if ok and typeof(container)=="Instance" then parent=container end
+        end
+        if not parent then pcall(function() parent=game:GetService("CoreGui") end) end
+        if not (parent and pcall(function() ring.Parent=parent end)) then
+            pcall(function() ring.Parent=workspace.CurrentCamera end)
+        end
         area.adornment=ring
     end
     local radius=settings.interceptArea
@@ -24259,7 +24392,7 @@ if isMMV then
         end
     end)
     pcall(function()
-        section:AddParagraph("Murderer First","Protect Against Murderer is prioritized: with both on, the shield turns to the murderer before the sheriff or hero. It needs Use Fake Bomb As Particle Helper or Use Gold Bomb As Particle Helper on.")
+        section:AddParagraph("Murderer First","Protect Against Murderer is prioritized: with the murderer in sight within 250 studs (or within 40 behind a wall), the bombs turn to the murderer while the fireflies keep their grid on the sheriff or hero. It needs Use Fake Bomb As Particle Helper or Use Gold Bomb As Particle Helper on.")
     end)
     pcall(function() section:AddLabel("Firefly Options") end)
     add("Firefly Ring Aura","ring")
@@ -24303,7 +24436,7 @@ else
     section:AddSlider("Interception Area (studs)",AREA_MIN,AREA_MAX,settings.interceptArea,function(value)
         settings.interceptArea=math.clamp(tonumber(value) or AREA_START,AREA_MIN,AREA_MAX)
         SetCfg("fireflyInterceptArea",settings.interceptArea)
-        area.update()
+        pcall(area.update)
     end)
     -- (and where it stops a knife: this many studs out from whoever it's at)
     section:AddSlider("Interception Distance (studs)",3,25,settings.interceptStop,function(value)
@@ -24311,18 +24444,18 @@ else
     end)
     controls.areaShow=addToggle(section,"Show Interception Area",settings.areaShow,function(value)
         settings.areaShow=value;SetCfg("fireflyInterceptAreaShow",value)
-        area.update()
+        pcall(area.update)
     end)
     pcall(function()
         section:AddColorpicker("Interception Area Colour",settings.areaColor,function(color)
             if typeof(color)~="Color3" then return end
             settings.areaColor=color;SetCfg("fireflyInterceptAreaColor",color)
-            area.update()
+            pcall(area.update)
         end)
     end)
     section:AddSlider("Interception Area Transparency",1,10,settings.areaAlpha,function(value)
         settings.areaAlpha=math.clamp(tonumber(value) or 7,1,10);SetCfg("fireflyInterceptAreaAlpha",settings.areaAlpha)
-        area.update()
+        pcall(area.update)
     end)
 end
 -- (how fast the Fake Bomb turns over your head: 1 to 5 turns a second)
@@ -24388,7 +24521,7 @@ runtime.FireflyProtection={
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
-        area.update()
+        pcall(area.update)
         refresh()
     end,
     UseJar=useJar,
@@ -24413,7 +24546,7 @@ runtime.FireflyProtection={
 local respawn=LocalPlayer.CharacterAdded:Connect(function()
     guardian.stop()
     for _,part in ipairs(table.clone(list)) do forget(part) end
-    smoothDirection=nil
+    smoothDirection=nil;smoothBombDirection=nil
     jar.busy=false
     jar.respawnAt=os.clock()
 end)
@@ -24429,7 +24562,7 @@ runtime.RegisterReset(function()
     settings.interceptArea,settings.areaShow,settings.areaAlpha=AREA_START,false,7
     settings.interceptStop=5
     settings.areaColor=Color3.fromRGB(90,200,255)
-    area.update()
+    pcall(area.update)
     settings.bombSpin=1
     settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
     settings.shieldDistance,settings.shieldGap=2,0
