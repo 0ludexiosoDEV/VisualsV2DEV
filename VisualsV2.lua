@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-57"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-23-fixes-58"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -12063,7 +12063,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-57",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-23-fixes-58",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -20886,6 +20886,15 @@ end)()
 --    close for your ping, as the Knife Shield does.)
 --    Wherever they go, a firefly is never put nearer another player than you: the game
 --    hands a loose part to the nearest player, and one handed to someone else stops nothing.
+--  * Protect Selected User (the user picked from everyone in the server; Refresh Players
+--    brings the list up to date): Protect With Knife Interception or Protect With Knife Shield
+--    (one at a time) lock your character onto their back, half into their body, facing the way
+--    they face and moving with them (your own collisions off meanwhile), and the fireflies work
+--    round them as Knife Interception or Knife Shield work round you, against knives at them
+--    and so at you too (the one you protect never counts as someone else for the fireflies).
+--    Only while they're alive, haven't got the knife, are within 200 studs, and are in the round
+--    if you are: otherwise you're let go, and your own mode (if one is on) is back. Not while
+--    you're the murderer or Firefly Clutch is clutching.
 --  MMV
 --  * Gun Shield: the original MMV shield (shield v13), a filled 5 x 5 square grid (here 0.52
 --    apart), turned to face the sheriff/hero wherever they are (all round you, tilted up or
@@ -21021,6 +21030,10 @@ local settings={
     -- (MMV: the Gold Fake Bomb kept out too, and the shield turned to the murderer as well)
     goldBomb=isMMV and C("fireflyMMV_GoldBomb",false)==true or false,
     murdererShield=isMMV and C("fireflyMMV_MurdererShield",false)==true or false,
+    -- (MM2's Protect Selected User: the one picked, and how they're protected)
+    userIntercept=not isMMV and C("fireflyProtectUserIntercept",false)==true,
+    userShield=not isMMV and C("fireflyProtectUserShield",false)==true,
+    userName=nil,
     distance=math.clamp(tonumber(C("fireflyProtectDistance",2.2)) or 2.2,1,4),
     interceptArea=math.clamp(tonumber(C("fireflyInterceptArea",AREA_START)) or AREA_START,AREA_MIN,AREA_MAX),
     areaShow=not isMMV and C("fireflyInterceptAreaShow",false)==true,
@@ -21036,6 +21049,10 @@ local settings={
     bombSpin=math.clamp(tonumber(C(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",1)) or 1,1,5),
 }
 settings.shieldGap=settings.shieldDistance-2
+do
+    local saved=C("fireflyProtectUser","None")
+    if type(saved)=="string" and saved~="" and saved~="None" then settings.userName=saved end
+end
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
 -- MMV's Gun Shield: the original's 5 x 5 square (shield v13), 0.52 apart, centred at your
@@ -21056,7 +21073,8 @@ local smoothDirection=nil
 local murdererNotice=-math.huge
 local diagnostics={fireflies=0,owned=0,threat="none",mode="idle",active=false,intercepts=0,jarUses=0,jarAttempts=0,skippedSlots=0,knivesDone=0}
 
-local function protecting() return settings.shield or settings.intercept or settings.sky or settings.ring or settings.mouse or settings.murdererShield end
+local function protecting() return settings.shield or settings.intercept or settings.sky or settings.ring or settings.mouse or settings.murdererShield
+    or settings.userIntercept or settings.userShield end
 -- (Use Fake Bomb As Particle Helper on its own keeps the status up, saying what it needs)
 local function active() return protecting() or settings.autoJar or settings.fakeBomb or settings.goldBomb end
 local function owned(part)
@@ -22417,11 +22435,11 @@ local GOLDEN=math.pi*(3-math.sqrt(5))
 -- theirs and from then on only shows where you put it on your own screen (no knife or shot
 -- is stopped by it). So the fireflies only go where you're the nearest (by a stud).
 local own={margin=1,me=Vector3.zero,others={}}
-function own.refresh(me)
+function own.refresh(me,except)
     own.me=me.Position
     table.clear(own.others)
     for _,plr in ipairs(Players:GetPlayers()) do
-        if plr~=LocalPlayer then
+        if plr~=LocalPlayer and plr~=except then
             local character=plr.Character
             local other=character and character:FindFirstChild("HumanoidRootPart")
             if other then own.others[#own.others+1]=other.Position end
@@ -22625,6 +22643,102 @@ local function letGo()
         for _,part in ipairs(list) do uncalm(part) end
     end
 end
+-- Protect Selected User (MM2): while you protect the one picked, your character is locked onto
+-- their back, half into their body, facing the way they face and moving with them (held at
+-- every step of the frame, with your own collisions off meanwhile, so nothing pushes you out of
+-- them), and the fireflies are worked round them as Knife Interception or Knife Shield work
+-- round you. Only while they're alive, haven't got the knife, are within 200 studs, and are in
+-- the round if you are (and out of it if you are): otherwise you're let go, and your own
+-- protection mode (if one's on) is back.
+local LOCK_BACK=0.5
+local lock={}
+local function userTarget()
+    local name=settings.userName
+    if not name then return nil end
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LocalPlayer and plr.Name==name then return plr end
+    end
+end
+local function inRound(entry) return not (entry.Dead==true or entry.Killed==true) end
+local function userGuard(me)
+    if isMMV or not (settings.userIntercept or settings.userShield) then return nil,nil end
+    if not settings.userName then return nil,"pick the user to protect" end
+    local plr=userTarget()
+    if not plr then return nil,settings.userName.." isn't in the server" end
+    local theirs=aliveRoot(plr)
+    if not theirs then return nil,plr.Name.." isn't alive" end
+    if role(plr)=="murderer" or hasTool(plr,"knife") then return nil,plr.Name.." has the knife" end
+    if (theirs.Position-me.Position).Magnitude>RANGE then return nil,plr.Name.." is over 200 studs away" end
+    -- (never carried into the round or out of it: MM2's own round data says who's still in it)
+    local data=roundData
+    local mine=type(data)=="table" and data[LocalPlayer.Name] or nil
+    local their=type(data)=="table" and data[plr.Name] or nil
+    if type(mine)=="table" and type(their)=="table" and inRound(mine)~=inRound(their) then
+        return nil,inRound(mine) and (plr.Name.." is out of the round") or "you're out of the round"
+    end
+    return {player=plr,root=theirs}
+end
+local function lockApply()
+    local theirs=lock.root
+    local root,character=myRoot()
+    if not theirs or not theirs.Parent or not root or character~=lock.character then return end
+    pcall(function()
+        local look=theirs.CFrame.LookVector
+        local flatLook=Vector3.new(look.X,0,look.Z)
+        flatLook=flatLook.Magnitude>0.01 and flatLook.Unit or Vector3.new(0,0,-1)
+        local at=theirs.Position-flatLook*LOCK_BACK
+        -- (never dragged after them over 200 studs: the next check lets you go instead)
+        if (at-root.Position).Magnitude>RANGE then return end
+        root.CFrame=CFrame.lookAt(at,at+flatLook)
+        root.AssemblyLinearVelocity=theirs.AssemblyLinearVelocity
+        root.AssemblyAngularVelocity=Vector3.zero
+    end)
+end
+-- (your own parts don't collide while you're locked on: put back as they were afterwards)
+local function lockNoclip()
+    local character=lock.character
+    if not character or not lock.saved then return end
+    for _,part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.CanCollide then
+            lock.saved[part]=true
+            part.CanCollide=false
+        end
+    end
+end
+local function lockStop()
+    for _,connection in ipairs(lock.connections or {}) do pcall(function() connection:Disconnect() end) end
+    lock.connections=nil
+    for part in pairs(lock.saved or {}) do
+        if part.Parent then pcall(function() part.CanCollide=true end) end
+    end
+    lock.saved=nil
+    if lock.humanoid and lock.autoRotate~=nil and lock.humanoid.Parent then
+        local humanoid,autoRotate=lock.humanoid,lock.autoRotate
+        pcall(function() humanoid.AutoRotate=autoRotate end)
+    end
+    lock.humanoid=nil;lock.autoRotate=nil
+    lock.player=nil;lock.root=nil;lock.character=nil
+    diagnostics.locked=false;diagnostics.protecting=nil
+end
+local function lockStart(guard)
+    local root,character=myRoot()
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid then lockStop();return end
+    if lock.character and lock.character~=character then lockStop() end
+    lock.player=guard.player;lock.root=guard.root
+    if not lock.connections then
+        lock.character=character;lock.humanoid=humanoid;lock.saved={}
+        lock.autoRotate=humanoid.AutoRotate
+        pcall(function() humanoid.AutoRotate=false end)
+        lock.connections={
+            RunService.Stepped:Connect(function() if lock.root then pcall(lockNoclip);lockApply() end end),
+            RunService.RenderStepped:Connect(function() if lock.root then lockApply() end end),
+        }
+    end
+    diagnostics.locked=true
+    pcall(lockNoclip)
+    lockApply()
+end
 local calmAt=0
 local function step(dt)
     clock=clock+dt
@@ -22639,10 +22753,12 @@ local function step(dt)
     end
     diagnostics.fireflies=#list
     diagnostics.active=false
-    if not me or not humanoid then diagnostics.threat="no character";letGo();return end
+    if not me or not humanoid then diagnostics.threat="no character";diagnostics.userWhy=nil;lockStop();letGo();return end
     refreshRound()
     if murdererMe(me) then
         diagnostics.threat="you are the murderer (paused)";diagnostics.mode="paused"
+        diagnostics.userWhy=nil
+        lockStop()
         letGo()
         if os.clock()-murdererNotice>60 then
             murdererNotice=os.clock()
@@ -22650,10 +22766,15 @@ local function step(dt)
         end
         return
     end
-    if clutchBusy() then diagnostics.threat="Firefly Clutch is using them";diagnostics.mode="clutch";letGo();return end
+    if clutchBusy() then diagnostics.threat="Firefly Clutch is using them";diagnostics.mode="clutch";diagnostics.userWhy=nil;lockStop();letGo();return end
+    -- (Protect Selected User: locked onto their back while they can be protected)
+    local guard,guardWhy=userGuard(me)
+    diagnostics.userWhy=guardWhy
+    diagnostics.protecting=guard and guard.player.Name or nil
+    if guard then lockStart(guard) else lockStop() end
     local selfMode={shield=settings.shield,intercept=not isMMV and settings.intercept,sky=not isMMV and settings.sky,
         murderer=isMMV and settings.murdererShield}
-    own.refresh(me)
+    own.refresh(me,guard and guard.player)
     refreshFilter()
     local ownedCount=0
     for _,part in ipairs(list) do if owned(part) then ownedCount=ownedCount+1 end end
@@ -22676,10 +22797,10 @@ local function step(dt)
     -- only attackers within 200 studs count (in the lobby, or dead and far from them, the
     -- fireflies just circle you); who's in sight or near: MM2's modes only need the fireflies
     -- then, behind a wall and further away they're free for Follow Mouse
-    local function nearOf(body)
+    local function nearOf(body,except)
         local found={}
         local from=body.Position+LIFT
-        for _,threat in ipairs(attackers(body)) do
+        for _,threat in ipairs(attackers(body,except)) do
             if threat.distance<=RANGE then
                 threat.seen=clear(from,threat.root.Position+Vector3.new(0,1,0))
                 found[#found+1]=threat
@@ -22689,10 +22810,12 @@ local function step(dt)
     end
     local function knivesAt(body,way,threats)
         if not (way.shield or way.intercept or way.sky or way.murderer) or not (isMMV or #threats>0) then return {} end
+        -- (protecting someone: knives at them, and so at you on their back)
+        if way.user then return knifeThreats(body,way.intercept and REACH_MAX/INTERCEPT_STUDS or 1) end
         if way.intercept and not isMMV then return areaThreats(body,settings.interceptArea,REACH_MAX/INTERCEPT_STUDS) end
         return knifeThreats(body,1)
     end
-    local near=nearOf(me)
+    local near=guard and nearOf(guard.root,guard.player) or nearOf(me)
     -- (MMV's Protect Against Murderer: whoever has the knife, within 200 studs, nearest first)
     local murderersNear={}
     if isMMV and selfMode.murderer then
@@ -22709,8 +22832,10 @@ local function step(dt)
         table.sort(murderersNear,function(a,b) return a.distance<b.distance end)
     end
     local root,mode=me,selfMode
-    local knivesComing=knivesAt(me,selfMode,near)
-    local mineKnife=not isMMV and iHaveKnife()
+    -- (protecting someone: worked round them, the way picked for them)
+    if guard then root,mode=guard.root,{shield=settings.userShield,intercept=settings.userIntercept,user=true} end
+    local knivesComing=knivesAt(root,mode,near)
+    local mineKnife=not isMMV and not guard and iHaveKnife()
 
     local center=root.Position+LIFT
     local targets={}
@@ -23047,6 +23172,7 @@ local function step(dt)
         end
     end
     kind=kind or "idle"
+    if guard then kind="protecting "..guard.player.Name..": "..kind end
     if not grid then smoothDirection=nil end
     -- The bombs: over your head, turning as fast as Fake Bomb Spin Speed says (two side by side),
     -- whatever the fireflies are doing, until a knife is thrown at you (the first of them then put
@@ -23219,6 +23345,9 @@ local function statusText()
     end
     local text=string.format("Fireflies: %d%s%s | %s",diagnostics.fireflies,bombText(fakeBomb,diagnostics.fakeBomb),
         bombText(goldBomb,diagnostics.goldBomb),diagnostics.active and "Active" or "Idle")
+    -- (Protect Selected User: who you're locked onto, or why you aren't)
+    if diagnostics.protecting then text=text.." | Protecting "..diagnostics.protecting
+    elseif diagnostics.userWhy then text=text.." | Protect Selected User: "..diagnostics.userWhy end
     -- (each bomb on: why it isn't out)
     for _,slot in ipairs(SLOTS) do
         if settings[slot.setting] and not slot.part and slot.why then text=text.." | "..slot.name..": "..slot.why end
@@ -23737,6 +23866,7 @@ end
 local function stop()
     stopWatching()
     unwatchPointer()
+    lockStop()
     letGo()
     -- (still known, just left alone: their own collision back)
     for _,part in ipairs(list) do
@@ -23893,9 +24023,10 @@ end)
 local controls={}
 local KEYS={shield=MMV_OWN.key("shield"),intercept="fireflyProtectIntercept",sky="fireflyProtectHidden",fakeBomb=MMV_OWN.key("fakeBomb"),
     ring=MMV_OWN.key("ring"),mouse=MMV_OWN.key("mouse"),autoJar=MMV_OWN.key("autoJar"),
-    goldBomb="fireflyMMV_GoldBomb",murdererShield="fireflyMMV_MurdererShield"}
+    goldBomb="fireflyMMV_GoldBomb",murdererShield="fireflyMMV_MurdererShield",
+    userIntercept="fireflyProtectUserIntercept",userShield="fireflyProtectUserShield"}
 -- (one of each group at a time: turning one on turns the one that was on off)
-local GROUPS=isMMV and {} or {{"shield","intercept","sky"}}
+local GROUPS=isMMV and {} or {{"shield","intercept","sky"},{"userIntercept","userShield"}}
 local function groupOf(field)
     for _,group in ipairs(GROUPS) do if table.find(group,field) then return group end end
 end
@@ -24002,10 +24133,61 @@ section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
     settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
     SetCfg(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",settings.bombSpin)
 end)
+-- Protect Selected User (MM2): the user picked (everyone in the server but you; Refresh Players
+-- brings the list up to date, as does anyone joining or leaving), and how they're protected:
+-- Protect With Knife Interception or Protect With Knife Shield, one at a time
+local users={dropdown=nil,refreshing=false,connections={}}
+function users.names()
+    local names={}
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LocalPlayer then names[#names+1]=plr.Name end
+    end
+    table.sort(names,function(a,b) return a:lower()<b:lower() end)
+    table.insert(names,1,"None")
+    return names
+end
+function users.refresh()
+    local dropdown=users.dropdown
+    if not dropdown then return end
+    local names=users.names()
+    users.refreshing=true
+    if type(dropdown.ChangeItems)=="function" then
+        pcall(function() dropdown:ChangeItems(names) end)
+    elseif type(dropdown.Change)=="function" then
+        pcall(dropdown.Change,names)
+    end
+    local shown=settings.userName and table.find(names,settings.userName) and settings.userName or "None"
+    if type(dropdown.Select)=="function" then
+        local ok=pcall(dropdown.Select,shown)
+        if not ok then pcall(function() dropdown:Select(shown) end) end
+    end
+    users.refreshing=false
+end
+if not isMMV then
+    pcall(function()
+        section:AddParagraph("Protect Selected User","Locks your character onto the back of the character you're protecting, so you can only protect them and do nothing else.")
+    end)
+    pcall(function()
+        users.dropdown=addDropdown(section,"Selected User",users.names(),settings.userName or "None",function(selected)
+            if users.refreshing then return end
+            local name=type(selected)=="table" and selected[1] or selected
+            name=name~=nil and tostring(name) or "None"
+            settings.userName=name~="None" and name or nil
+            SetCfg("fireflyProtectUser",settings.userName or "None")
+        end,function(selected)
+            if selected~=nil and tostring(selected)~="None" then return "Firefly Protection: protecting "..tostring(selected) end
+        end)
+    end)
+    section:AddButton("Refresh Players",function() users.refresh() end)
+    add("Protect With Knife Interception","userIntercept")
+    add("Protect With Knife Shield","userShield")
+    users.connections[#users.connections+1]=Players.PlayerAdded:Connect(function() task.defer(users.refresh) end)
+    users.connections[#users.connections+1]=Players.PlayerRemoving:Connect(function() task.defer(users.refresh) end)
+end
 runtime.FireflyProtection={
     Active=active,
     DisableAll=function()
-        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","goldBomb","murdererShield","areaShow"}) do
+        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","goldBomb","murdererShield","areaShow","userIntercept","userShield"}) do
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
@@ -24032,6 +24214,7 @@ runtime.FireflyProtection={
     end,
 }
 local respawn=LocalPlayer.CharacterAdded:Connect(function()
+    lockStop()
     for _,part in ipairs(table.clone(list)) do forget(part) end
     smoothDirection=nil
     jar.busy=false
@@ -24042,6 +24225,8 @@ runtime.RegisterReset(function()
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.sky=false
     settings.fakeBomb,settings.goldBomb,settings.murdererShield=false,false,false
+    settings.userIntercept,settings.userShield,settings.userName=false,false,nil
+    lockStop()
     releaseBomb()
     settings.distance=2.2
     settings.interceptArea,settings.areaShow,settings.areaAlpha=AREA_START,false,7
@@ -24056,6 +24241,7 @@ runtime.RegisterReset(function()
     table.clear(knives)
     if not runtimeAlive then
         respawn:Disconnect()
+        for _,connection in ipairs(users.connections) do pcall(function() connection:Disconnect() end) end
         if watchAdded then watchAdded:Disconnect();watchAdded=nil end
         if watchRemoved then watchRemoved:Disconnect();watchRemoved=nil end
     end
