@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-50"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-53"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -4610,8 +4610,10 @@ end)()
 ;(function()
 -- Visual Avatar: another Roblox account's avatar in place of yours, on your screen. A copy
 -- of their whole avatar (body, size and proportions, skin, face, clothing, hair and every
--- accessory) follows your character every frame and copies your every pose, while your
--- own body is hidden on your screen only. Nothing of your character is changed, so anything
+-- accessory) follows your character every frame and copies your every pose (each of its
+-- parts is put where its own joints say with your pose in them, every frame, so it moves
+-- exactly as you do, walking, running, jumping, idling), while your own body is hidden on
+-- your screen only. Nothing of your character is changed, so anything
 -- held stays with you, and turning it off just shows you again as you were. The copy can never
 -- touch you: its body is kept from colliding before every physics step (a Humanoid switches
 -- its own body's collisions back on, and a copy standing inside you would push you away).
@@ -4814,8 +4816,34 @@ local function restore()
     end
     if type(runtime.SetAnimationOverride)=="function" then pcall(runtime.SetAnimationOverride,nil) end
 end
-local function motorKey(motor)
-    return tostring(motor.Name).."|"..tostring(motor.Part0 and motor.Part0.Name).."|"..tostring(motor.Part1 and motor.Part1.Name)
+-- A joint's two parts and its offsets (part 1 = part 0 * c0 * pose * c1:Inverse()): a Motor6D
+-- or weld's own, an AnimationConstraint's or RigidConstraint's attachments, a WeldConstraint's
+-- as the two parts sit
+local IDENTITY=CFrame.new()
+local function jointEnds(joint)
+    if joint:IsA("JointInstance") then
+        local p0,p1=joint.Part0,joint.Part1
+        if p0 and p1 then return p0,p1,joint.C0 or IDENTITY,joint.C1 or IDENTITY end
+    elseif joint:IsA("AnimationConstraint") or joint:IsA("RigidConstraint") then
+        local a0,a1=joint.Attachment0,joint.Attachment1
+        local p0,p1=a0 and a0.Parent,a1 and a1.Parent
+        if p0 and p1 and p0:IsA("BasePart") and p1:IsA("BasePart") then return p0,p1,a0.CFrame or IDENTITY,a1.CFrame or IDENTITY end
+    elseif joint:IsA("WeldConstraint") then
+        local p0,p1=joint.Part0,joint.Part1
+        if p0 and p1 then return p0,p1,p0.CFrame:ToObjectSpace(p1.CFrame),IDENTITY end
+    end
+end
+local function animated(joint) return joint:IsA("Motor6D") or joint:IsA("AnimationConstraint") end
+-- your character's moving joints, by the two parts they join
+local function posedJoints(character)
+    local found={}
+    for _,joint in ipairs(character:GetDescendants()) do
+        if animated(joint) then
+            local ok,p0,p1=pcall(jointEnds,joint)
+            if ok and p0 and p1 then found[p0.Name.."|"..p1.Name]=joint end
+        end
+    end
+    return found
 end
 
 local function apply(template,label)
@@ -4837,7 +4865,6 @@ local function apply(template,label)
             object:Destroy()
         elseif object:IsA("BasePart") then
             object.CanCollide=false;object.CanTouch=false;object.CanQuery=false;object.Massless=true
-            object.Anchored=object==theirRoot
         end
     end
     theirRoot.Transparency=1
@@ -4858,6 +4885,54 @@ local function apply(template,label)
         theirHumanoid:ChangeState(Enum.HumanoidStateType.Physics)
     end)
     pcall(function() theirHumanoid.EvaluateStateMachine=false end)
+    -- How it's held together: every joint of it (its body's, and its hair's and accessories'
+    -- welds), in the order its parts are put from its root out. Then the joints are taken out
+    -- and every part of it fixed in place, so the add-on alone puts each part, every frame, where
+    -- its joint says with your pose in it (nothing of the game's is left to hold a pose of its own)
+    local links,joints={},{}
+    for _,joint in ipairs(puppet:GetDescendants()) do
+        local ok,p0,p1,c0,c1=pcall(jointEnds,joint)
+        if ok and p0 and p1 and p0~=p1 and p0:IsDescendantOf(puppet) and p1:IsDescendantOf(puppet) then
+            local entry={joint=joint,p0=p0,p1=p1,c0=c0,c1=c1,c0Inverse=c0:Inverse(),c1Inverse=c1:Inverse(),
+                posed=animated(joint),key=p0.Name.."|"..p1.Name}
+            joints[#joints+1]=entry
+            links[p0]=links[p0] or {};table.insert(links[p0],entry)
+            links[p1]=links[p1] or {};table.insert(links[p1],entry)
+        end
+    end
+    local steps,placed={},{[theirRoot]=true}
+    local function spread(from)
+        local queue,head={from},1
+        while head<=#queue do
+            local part=queue[head];head=head+1
+            for _,entry in ipairs(links[part] or {}) do
+                local other=entry.p0==part and entry.p1 or entry.p0
+                if not placed[other] then
+                    placed[other]=true
+                    steps[#steps+1]={part=other,from=part,forward=entry.p0==part,entry=entry}
+                    queue[#queue+1]=other
+                end
+            end
+        end
+    end
+    spread(theirRoot)
+    -- (anything not joined to its root: kept where it sits from the root, and what hangs off it)
+    local loose={}
+    for _,object in ipairs(puppet:GetDescendants()) do
+        if object:IsA("BasePart") and not placed[object] then loose[#loose+1]=object end
+    end
+    table.sort(loose,function(a,b) return #(links[a] or {})>#(links[b] or {}) end)
+    for _,part in ipairs(loose) do
+        if not placed[part] then
+            placed[part]=true
+            steps[#steps+1]={part=part,from=theirRoot,fixed=theirRoot.CFrame:ToObjectSpace(part.CFrame)}
+            spread(part)
+        end
+    end
+    for _,entry in ipairs(joints) do pcall(function() entry.joint:Destroy() end) end
+    for _,object in ipairs(puppet:GetDescendants()) do
+        if object:IsA("BasePart") then object.Anchored=true end
+    end
     -- Headless and Korblox still show: no head on the copy with Headless; with Korblox the
     -- copy's leg on that side is hidden and your Korblox leg shows
     if headlessEnabled then
@@ -4871,25 +4946,17 @@ local function apply(template,label)
         local part=puppet:FindFirstChild(name)
         if part and part:IsA("BasePart") and korbloxSide(name) then part.Transparency=1 end
     end
-    -- their joints matched to yours, so the copy takes every pose of yours
-    local theirs={}
-    for _,motor in ipairs(puppet:GetDescendants()) do
-        if motor:IsA("Motor6D") then theirs[motorKey(motor)]=motor end
-    end
-    local pairsList={}
-    for _,motor in ipairs(character:GetDescendants()) do
-        if motor:IsA("Motor6D") then
-            local other=theirs[motorKey(motor)]
-            if other then pairsList[#pairsList+1]={motor,other} end
-        end
-    end
+    -- (its moving joints matched to yours by the parts they join, so it takes your every pose)
+    local mine=posedJoints(character)
+    local matched=0
+    for _,step in ipairs(steps) do if step.entry and step.entry.posed and mine[step.entry.key] then matched=matched+1 end end
     -- (standing on the ground at their own height)
     local offset=0
     if humanoid.RigType==Enum.HumanoidRigType.R15 then
         offset=((tonumber(theirHumanoid.HipHeight) or 2)+theirRoot.Size.Y/2)-((tonumber(humanoid.HipHeight) or 2)+root.Size.Y/2)
     end
     local state={character=character,humanoid=humanoid,root=root,puppet=puppet,theirRoot=theirRoot,
-        pairs=pairsList,offset=offset,hidden={},connections={},firstPerson=false,parts={}}
+        steps=steps,mine=mine,matched=matched,offset=offset,hidden={},connections={},firstPerson=false,parts={}}
     for _,object in ipairs(puppet:GetDescendants()) do
         if object:IsA("BasePart") and object~=theirRoot then state.parts[#state.parts+1]=object end
     end
@@ -4964,8 +5031,30 @@ local function apply(template,label)
         if not root.Parent or not character.Parent or LocalPlayer.Character~=character then restore();return end
         if not puppet.Parent then puppet.Parent=workspace.CurrentCamera or workspace end
         theirRoot.CFrame=root.CFrame*CFrame.new(0,state.offset,0)
-        for _,pair in ipairs(state.pairs) do pair[2].Transform=pair[1].Transform end
-        if os.clock()-(state.weaponsAt or 0)>1 then state.weaponsAt=os.clock();pcall(state.refreshWeapons) end
+        -- (every part of it, out from its root: its own joint, with your pose in it)
+        local poses=state.mine
+        for _,step in ipairs(state.steps) do
+            local at
+            if step.fixed then
+                at=step.from.CFrame*step.fixed
+            else
+                local entry=step.entry
+                local pose=IDENTITY
+                if entry.posed then
+                    local yours=poses[entry.key]
+                    if yours then pose=yours.Transform or IDENTITY end
+                end
+                if step.forward then at=step.from.CFrame*entry.c0*pose*entry.c1Inverse
+                else at=step.from.CFrame*entry.c1*pose:Inverse()*entry.c0Inverse end
+            end
+            step.part.CFrame=at
+        end
+        if os.clock()-(state.weaponsAt or 0)>1 then
+            state.weaponsAt=os.clock();pcall(state.refreshWeapons)
+            -- (your joints looked up again, in case the game has put any new ones in)
+            local ok,fresh=pcall(posedJoints,character)
+            if ok then state.mine=fresh end
+        end
         for display,entry in pairs(state.weapons) do
             if display.Parent and entry.body.Parent then
                 local theirBody=puppet:FindFirstChild(entry.body.Name)
@@ -5050,7 +5139,7 @@ local respawn=LocalPlayer.CharacterAdded:Connect(function(character)
 end)
 runtime.VisualAvatar={Load=load,Restore=restore,GetState=function() return enabled,target,current~=nil end,
     GetDiagnostics=function() local copy=table.clone(stats);copy.showing=current~=nil;copy.hidden=0
-        if current then for _ in pairs(current.hidden) do copy.hidden=copy.hidden+1 end;copy.joints=#current.pairs end
+        if current then for _ in pairs(current.hidden) do copy.hidden=copy.hidden+1 end;copy.joints=current.matched;copy.parts=#current.steps end
         return copy end}
 runtime.RegisterReset(function()
     toggle:Set(false)
@@ -5069,10 +5158,10 @@ end)()
 -- Big buttons (Speed Glitch, Trick Shoot): ODH's big-button design from the add-on
 -- template (white, 90% see-through, Jura text, rounded corners and the turning gradient
 -- outline). Their size can be changed. All the add-on's buttons (big ones and bind ones)
--- take their gradient from the UI customization picked in ODH's Settings (its 3 Secondary
--- colours; bind buttons switched off show its Secondary Variant), unless Miscellaneous'
--- Custom Big Button Gradient gives them a 3-colour gradient of your own (bind buttons too:
--- on or ready like the big buttons, off a little darker). Each big button
+-- take their gradient from the UI customization picked in ODH's Settings (all 3 of its
+-- Secondary Variant colours), unless Miscellaneous' Custom Big Button Gradient gives them a
+-- 3-colour gradient of your own; bind buttons on or ready like the big buttons, off a little
+-- darker. Each big button
 -- keeps its saved spot and follows Lock Big Button POS in Miscellaneous. Each section's
 -- Hide Button Text hides the words on its buttons.
 ;(function()
@@ -5104,12 +5193,17 @@ function style.Custom()
     })
 end
 -- ODH's Settings: the UI customization picked there (its files are in the executor's
--- workspace, Ixry Shizuka/customs/ui_customizations). ODH's own big buttons are copied when
--- there are any; which customization is picked is read off ODH's own buttons and menu (the
--- customization whose colours they show) or ODH's saved settings.
-style.settings={secondary=nil,variant=nil,name=nil}
+-- workspace, Ixry Shizuka/customs/ui_customizations, on Delta in Delta's own folder; found
+-- even if a part of it is written another way). Its three Secondary Variant colours make the
+-- gradient (its Secondary ones for a customization without them), even when they're all the
+-- same colour. ODH's own big buttons are copied when they show those colours; which
+-- customization is picked is read off ODH's own buttons and menu (the customization whose
+-- colours they show) or ODH's saved settings.
+style.settings={gradient=nil,name=nil}
 style.listeners={}
-local THEME_FOLDER="Ixry Shizuka/customs/ui_customizations"
+local THEME_FOLDERS={"Ixry Shizuka/customs/ui_customizations","Ixry Shizuka/customs/ui-customizations",
+    "Ixry Shizuka/customs/ui customizations","Ixry Shizuka/customs/UI Customizations","Ixry Shizuka/customs/UI_Customizations"}
+local themePlace={folder=nil,root="Ixry Shizuka",scannedAt=-math.huge}
 local HttpService=game:GetService("HttpService")
 local function hexColor(value)
     if type(value)~="string" then return nil end
@@ -5162,12 +5256,23 @@ local function colorSet(source)
     end
     return {set=set,count=count}
 end
--- the same colours (at least 2, every one of the smaller set in the other)
+-- the same colours (every one of the smaller set in the other; one colour all the way
+-- through, as some customizations have, only that very colour)
 local function sameColors(a,b)
-    if not a or not b or a.count<2 or b.count<2 then return false end
+    if not a or not b or a.count<1 or b.count<1 then return false end
+    if a.count==1 or b.count==1 then
+        if a.count~=b.count then return false end
+        return b.set[next(a.set)]==true
+    end
     local common=0
     for hex in pairs(a.set) do if b.set[hex] then common=common+1 end end
     return common>=math.min(a.count,b.count)
+end
+-- (plain white or black all the way through: what an outline shows with no gradient given it)
+local function bare(colors)
+    if not colors or colors.count~=1 then return false end
+    local hex=next(colors.set)
+    return hex=="FFFFFF" or hex=="000000"
 end
 local TEMPLATE_SET=colorSet(GRADIENT)
 local GOLD_SET=colorSet({Color3.fromRGB(255,215,0),Color3.fromRGB(255,140,0),Color3.fromRGB(184,134,11)})
@@ -5176,13 +5281,93 @@ local function groupNamed(data,wanted)
         if type(key)=="string" and key:lower():gsub("[^%a]","")==wanted then return value end
     end
 end
-local function readThemes()
-    local list={}
+local function fileApi()
     local listFiles=type(listfiles)=="function" and listfiles or env.listfiles
     local readFile=type(readfile)=="function" and readfile or env.readfile
-    if type(listFiles)~="function" or type(readFile)~="function" then return list end
-    local ok,files=pcall(listFiles,THEME_FOLDER)
-    if not ok or type(files)~="table" then return list end
+    local isFolder=type(isfolder)=="function" and isfolder or env.isfolder
+    return listFiles,readFile,isFolder
+end
+local function plainName(text) return (tostring(text or ""):lower():gsub("[^%a]","")) end
+local function lastPart(path) return (tostring(path):gsub("[/\\]+$","")):match("([^/\\]+)$") or tostring(path) end
+-- (a folder's .json files)
+local function jsonFiles(folder)
+    local listFiles=fileApi()
+    if type(listFiles)~="function" then return {} end
+    local ok,entries=pcall(listFiles,folder)
+    if not ok or type(entries)~="table" then return {} end
+    local list={}
+    for _,path in ipairs(entries) do
+        if type(path)=="string" and path:lower():sub(-5)==".json" then list[#list+1]=path end
+    end
+    return list
+end
+-- (the folders straight inside one)
+local function subfolders(folder)
+    local listFiles,_,isFolder=fileApi()
+    if type(listFiles)~="function" then return {} end
+    local ok,entries=pcall(listFiles,folder)
+    if not ok or type(entries)~="table" then return {} end
+    local base=(folder:gsub("\\","/"):gsub("/+$",""))
+    local list,seen={},{}
+    local function add(path)
+        local key=path:lower()
+        if not seen[key] then seen[key]=true;list[#list+1]=path end
+    end
+    for index,entry in ipairs(entries) do
+        if index>400 then break end
+        if type(entry)=="string" then
+            local path=entry:gsub("\\","/")
+            local inside=base=="" or path:lower():sub(1,#base+1)==base:lower().."/"
+            local rest=inside and (base=="" and path or path:sub(#base+2)) or nil
+            local first=rest and rest:match("^([^/]+)/")
+            if first then add((base~="" and base.."/" or "")..first)
+            elseif type(isFolder)=="function" then
+                local okFolder,folderLike=pcall(isFolder,entry)
+                if okFolder and folderLike==true then add(entry) end
+            end
+        end
+    end
+    return list
+end
+-- where the customizations are: the usual names first, then ODH's folder (any with "shizuka"
+-- in its name), its customs folder and the ui customizations folder in that, however written
+local function usualThemeFolder()
+    for _,folder in ipairs(THEME_FOLDERS) do
+        if #jsonFiles(folder)>0 then return folder,"Ixry Shizuka" end
+    end
+end
+local function scanThemeFolder()
+    local roots={"Ixry Shizuka"}
+    for _,top in ipairs(subfolders("")) do
+        if plainName(lastPart(top)):find("shizuka",1,true) and top~="Ixry Shizuka" then roots[#roots+1]=top end
+    end
+    for _,root in ipairs(roots) do
+        for _,customs in ipairs(subfolders(root)) do
+            if plainName(lastPart(customs)):find("custom",1,true) then
+                for _,folder in ipairs(subfolders(customs)) do
+                    if plainName(lastPart(folder)):find("uicustom",1,true) and #jsonFiles(folder)>0 then return folder,root end
+                end
+            end
+        end
+    end
+    return nil
+end
+local function readThemes()
+    local list={}
+    local _,readFile=fileApi()
+    if type(readFile)~="function" then return list end
+    -- (the folder found before; while it has none, looked for again: the usual names each time,
+    -- the whole workspace at most every 15 s)
+    local files=themePlace.folder and jsonFiles(themePlace.folder) or {}
+    if #files==0 then
+        local folder,root=usualThemeFolder()
+        if not folder and os.clock()-themePlace.scannedAt>=15 then
+            themePlace.scannedAt=os.clock()
+            folder,root=scanThemeFolder()
+        end
+        if folder then themePlace.folder,themePlace.root=folder,root;files=jsonFiles(folder) end
+    end
+    style.themeFolder=themePlace.folder
     for _,path in ipairs(files) do
         if type(path)=="string" and path:lower():sub(-5)==".json" then
             local okRead,text=pcall(readFile,path)
@@ -5192,7 +5377,11 @@ local function readThemes()
                     local entry={name=path:match("([^/\\]+)%.[Jj][Ss][Oo][Nn]$") or path,data=data,colors={}}
                     entry.secondary=orderedColors(groupNamed(data,"secondary"))
                     entry.variant=orderedColors(groupNamed(data,"secondaryvariant"))
+                    -- (our buttons': its Secondary Variant, all three; its Secondary for one without it)
+                    entry.gradient=entry.variant or entry.secondary
+                    entry.gradientSet=colorSet(entry.gradient)
                     entry.secondarySet=colorSet(entry.secondary)
+                    entry.variantSet=colorSet(entry.variant)
                     for _,group in pairs(data) do
                         if type(group)=="table" then
                             for _,value in pairs(group) do
@@ -5201,7 +5390,7 @@ local function readThemes()
                             end
                         end
                     end
-                    if entry.secondary then list[#list+1]=entry end
+                    if entry.gradient then list[#list+1]=entry end
                 end
             end
         end
@@ -5316,7 +5505,7 @@ local function odhButtonGradients()
             local gradient=stroke and stroke:FindFirstChildOfClass("UIGradient") or button:FindFirstChildOfClass("UIGradient")
             if gradient then
                 local colors=colorSet(gradient.Color)
-                if colors.count>=2 and not sameColors(colors,TEMPLATE_SET) and not sameColors(colors,GOLD_SET) then
+                if colors.count>=1 and not sameColors(colors,TEMPLATE_SET) and not sameColors(colors,GOLD_SET) then
                     list[#list+1]={sequence=gradient.Color,colors=colors}
                 end
             end
@@ -5347,7 +5536,7 @@ local function savedPick(themes)
             local lower=type(path)=="string" and path:lower() or ""
             local okFolder,folderLike=false,false
             if type(isFolder)=="function" then okFolder,folderLike=pcall(isFolder,path) end
-            if lower:find("ui_customizations",1,true) and lower:match("%.json$") then
+            if plainName(path):find("uicustomization",1,true) and lower:match("%.json$") then
                 -- (the customizations themselves)
             elseif okFolder and folderLike==true then
                 if depth<3 then look(path,depth+1) end
@@ -5365,13 +5554,15 @@ local function savedPick(themes)
             end
         end
     end
-    look("Ixry Shizuka",0)
+    look(themePlace.root or "Ixry Shizuka",0)
     local pick,count=nil,0
     for theme in pairs(found) do pick=theme;count=count+1 end
     if count==1 then saved.pick=pick.name;return pick end
     return nil
 end
 style.themeDiagnostics={}
+-- (ODH's own things can show a customization's Secondary Variant or its Secondary)
+local function shows(colors,theme) return sameColors(colors,theme.variantSet) or sameColors(colors,theme.secondarySet) end
 local function pickTheme(themes)
     style.themeDiagnostics={themes=#themes,scores={}}
     -- (no customizations to pick from: ODH's own big buttons are still looked for, to copy)
@@ -5387,23 +5578,23 @@ local function pickTheme(themes)
         for theme in pairs(matches) do pick=theme;count=count+1 end
         return count==1 and pick or nil
     end
-    -- (ODH's own big buttons showing one's Secondary colours)
+    -- (ODH's own big buttons showing one's colours)
     local fromButtons={}
     for _,candidate in ipairs(odhButtonGradients()) do
         for _,theme in ipairs(themes) do
-            if sameColors(candidate.colors,theme.secondarySet) then fromButtons[theme]=true end
+            if shows(candidate.colors,theme) then fromButtons[theme]=true end
         end
     end
     local pick=only(fromButtons)
     if pick then style.themeDiagnostics.by="odh buttons";return pick end
     local seen,found,gradients=menuColors()
     style.themeDiagnostics.menuFound=found
-    -- (a gradient in ODH's menu in one's Secondary colours)
+    -- (a gradient in ODH's menu in one's colours)
     local hits={}
     local best,bestHits,tied=nil,0,false
     for _,theme in ipairs(themes) do
         local count=0
-        for _,colors in ipairs(gradients) do if sameColors(colors,theme.secondarySet) then count=count+1 end end
+        for _,colors in ipairs(gradients) do if not bare(colors) and shows(colors,theme) then count=count+1 end end
         hits[theme]=count
         if count>bestHits then best,bestHits,tied=theme,count,false elseif count==bestHits and count>0 then tied=true end
     end
@@ -5449,19 +5640,23 @@ local function sequenceKey(sequence)
 end
 local theme=nil
 local function apply()
-    -- ODH's own big buttons, when there are any, are copied exactly (the system's gradient as
-    -- it shows); otherwise the picked customization's Secondary colours
+    -- ODH's own big buttons showing the picked customization's Secondary Variant are copied
+    -- exactly (the system's gradient as it shows); otherwise that customization's Secondary
+    -- Variant, all three colours (with none picked, ODH's own big buttons as they show)
     local mirrored=nil
     local candidates=odhButtonGradients()
     for _,candidate in ipairs(candidates) do
-        if theme and sameColors(candidate.colors,theme.secondarySet) then mirrored=candidate.sequence;break end
+        if theme and sameColors(candidate.colors,theme.gradientSet) then mirrored=candidate.sequence;break end
     end
-    if not mirrored and not theme and candidates[1] then mirrored=candidates[1].sequence end
-    local secondary=mirrored or (theme and sequenceOf(theme.secondary)) or nil
-    local variant=theme and sequenceOf(theme.variant) or nil
-    local signature=sequenceKey(secondary).."|"..sequenceKey(variant)
+    if not mirrored and not theme then
+        for _,candidate in ipairs(candidates) do
+            if not bare(candidate.colors) then mirrored=candidate.sequence;break end
+        end
+    end
+    local gradient=mirrored or (theme and sequenceOf(theme.gradient)) or nil
+    local signature=sequenceKey(gradient).."|"..tostring(theme and theme.name)
     if signature==style.settings.signature then return end
-    style.settings={secondary=secondary,variant=variant,name=theme and theme.name or nil,mirrored=mirrored~=nil,signature=signature}
+    style.settings={gradient=gradient,name=theme and theme.name or nil,mirrored=mirrored~=nil,signature=signature}
     restyleAll()
 end
 local function refreshTheme()
@@ -5484,7 +5679,7 @@ end)
 -- button's usual one
 function style.Sequence(default)
     if style.enabled then return style.Custom() end
-    return style.settings.secondary or default or GRADIENT
+    return style.settings.gradient or default or GRADIENT
 end
 -- (a gradient a little darker, for a bind button that's switched off)
 function style.Dim(sequence)
@@ -5497,13 +5692,12 @@ function style.Dim(sequence)
     return ColorSequence.new(points)
 end
 -- a bind button's, matching the big buttons: switched on (or ready, for one that isn't
--- switched) exactly the big buttons' gradient (Settings' or your custom one); switched off
--- Settings' Secondary Variant, or the big buttons' gradient a little darker (with no
--- customization picked and the custom gradient off: its usual colours)
+-- switched) exactly the big buttons' gradient (Settings' or your custom one), switched off the
+-- same a little darker (with no customization picked and the custom gradient off: its usual
+-- colours)
 function style.BindSequence(active,default)
-    local main=style.enabled and style.Custom() or style.settings.secondary
+    local main=style.enabled and style.Custom() or style.settings.gradient
     if active then return main or default end
-    if not style.enabled and style.settings.variant then return style.settings.variant end
     return style.Dim(main) or default
 end
 function style.OnChange(listener) if type(listener)=="function" then style.listeners[#style.listeners+1]=listener end end
@@ -5840,8 +6034,8 @@ local BindableButtons = (function()
         ColorSequenceKeypoint.new(0.75, Color3.new(0.0784314, 0.0784314, 0.54902)),
         ColorSequenceKeypoint.new(1, Color3.new(0.470588, 0.156863, 0.470588)),
     })
-    -- (switched on: the Settings / custom gradient like the big buttons; switched off: its
-    -- usual colours, or Settings' Secondary Variant)
+    -- (switched on: the Settings / custom gradient like the big buttons; switched off: the
+    -- same a little darker, or its usual colours)
     local function bindColor(state)
         local default=state and toggledColor or normalColor
         local buttonStyle=env.VisualsV2Runtime.BigButtonStyle
@@ -8025,9 +8219,14 @@ local bindToggle=addToggle(section,"Show Reset Bindable Button",state.bindVisibl
     state.bindVisible=value;SetCfg("resetBindButtonVisible",value)
     setBindWanted(value)
 end)
-local textToggle=addToggle(section,"Hide Button Text",C("resetHideText",false)==true,function(value)
-    SetCfg("resetHideText",value)
-    if runtime.ButtonText then runtime.ButtonText.SetHidden({BIND_ID},value) end
+-- (its R always shows: one hidden by an earlier run is shown again)
+task.spawn(function()
+    for _=1,50 do
+        if not runtimeAlive then return end
+        local text=runtime.ButtonText
+        if text and type(text.SetHidden)=="function" then pcall(text.SetHidden,{BIND_ID},false);return end
+        task.wait(0.2)
+    end
 end)
 local keybindToggle=addToggle(section,"Enable Reset Character Keybind",state.keybindOn,function(value)
     state.keybindOn=value;SetCfg("resetKeybindEnabled",value)
@@ -8041,7 +8240,7 @@ section:AddButton("Reset Bind Button Position",function()
 end)
 
 runtime.RegisterReset(function()
-    bindToggle:Set(false);textToggle:Set(false);keybindToggle:Set(false)
+    bindToggle:Set(false);keybindToggle:Set(false)
     state.bindVisible=false;state.keybindOn=false
     setBindWanted(false)
 end)
@@ -11865,7 +12064,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-50",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-22-fixes-53",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -20713,14 +20912,16 @@ end)()
 --    and has your toys put back in order after each use.
 --  * The jar's lid, while it's out, moves round with the fireflies as one of them.
 --  * Use Fake Bomb As Particle Helper: your Fake Bomb taken out and thrown by itself
---    whenever none is out and it's ready (or the one you throw yourself), tumbling over and
---    over as it moves round with the fireflies as one of them; in the ring aura it floats
---    over your head instead. In a knife's way (MM2) it takes the spot right on the knife's
---    line: solid for the game and far bigger than a firefly (on your screen never solid, so
---    it can't push you). As the MM2 murderer (protection paused) it's left alone, so Bomb
---    Jump works then, like Firefly Clutch. (Found when thrown by what it is: the toy's own
---    Handle copied out into the map, the same size, with its sounds.) Fake Bomb Spin Speed
---    (1 to 5 turns a second) is how fast it turns while it idles with the fireflies.
+--    whenever none is out and it's ready (the way you throw it yourself), or the one you throw
+--    yourself. It's never one of the fireflies (it never takes a firefly's place): it floats
+--    over your head, tumbling over and over, whatever they're doing, until a knife is thrown
+--    at you (MMV: or the one with the gun fires at you); then it's put ahead of the fireflies,
+--    still, its broad side to where that comes from: solid for the game and far bigger than a
+--    firefly (on your screen never solid, so it can't push you). Not used with Hidden Knife
+--    Interception. As the MM2 murderer (protection paused) it's left alone, so Bomb Jump works
+--    then, like Firefly Clutch. (Found when thrown by what it is: the toy's own Handle copied
+--    out into the map, the same size, with its sounds.) Fake Bomb Spin Speed (1 to 5 turns a
+--    second) is how fast it turns over your head.
 --  * In the lobby, or dead, with no attacker within 200 studs: just the ring aura (or the
 --    mouse swarm).
 --  * Firefly Clutch is off (its timer says DISABLED) while protection is working.
@@ -20769,16 +20970,18 @@ function MMV_OWN.toggle(field)
     return C(key,C(old)==true)==true
 end
 -- MMV's Shield Distance: 2 is right against your body (where it was closest before), down to 1
--- for up to a stud closer still (never inside your torso), up to 5 for 3 studs off
+-- for up to a stud closer still (never inside your torso), up to 3 for a stud off; one saved
+-- further out than that (it went to 5 before) comes back as 3
+local SHIELD_MAX=3
 function MMV_OWN.shieldDistance()
     local own=tonumber(C("fireflyMMV_ShieldDistance"))
-    if own then return math.clamp(own,1,5) end
+    if own then return math.clamp(own,1,SHIELD_MAX) end
     local gap=tonumber(C("fireflyMMVShieldGap"))
     if not gap then
         local old=tonumber(C("fireflyShieldGap"))
         if old and old~=0.1 then gap=old end
     end
-    return math.clamp(tonumber(C("fireflyMMV_ShieldDistance",gap and math.clamp(gap+2,1,5) or 2)) or 2,1,5)
+    return math.clamp(tonumber(C("fireflyMMV_ShieldDistance",gap and math.clamp(gap+2,1,SHIELD_MAX) or 2)) or 2,1,SHIELD_MAX)
 end
 -- MM2's Interception Distance, in studs along a knife's path (7 to 25). 14 is where the old
 -- 1-to-5 slider started (and as far as it went before that slider); a saved old setting
@@ -20813,8 +21016,8 @@ local settings={
     ringDistance=math.clamp(tonumber(MMV_OWN.read("ringDistance")) or MMV_OWN.default("ringDistance"),1,8),
     ringSpeed=math.clamp(tonumber(MMV_OWN.read("ringSpeed")) or MMV_OWN.default("ringSpeed"),0,10),
     shieldDistance=isMMV and MMV_OWN.shieldDistance() or 2,
-    -- (Fake Bomb Spin Speed: how fast the Fake Bomb turns while it idles with the fireflies,
-    -- in turns a second, 1 to 5; each game its own)
+    -- (Fake Bomb Spin Speed: how fast the Fake Bomb turns over your head, in turns a second,
+    -- 1 to 5; each game its own)
     bombSpin=math.clamp(tonumber(C(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",1)) or 1,1,5),
 }
 settings.shieldGap=settings.shieldDistance-2
@@ -21002,11 +21205,13 @@ local blocking=setmetatable({}, {__mode="k"})
 local offsetAnchor=setmetatable({}, {__mode="k"})
 local pinned=setmetatable({}, {__mode="k"})
 -- Use Fake Bomb As Particle Helper: one of your Fake Bombs kept out (thrown out by itself
--- whenever none is and the toy is ready, putting back what you held; or the one you throw)
--- and moved round with the fireflies as one of them, tumbling, never solid, so it can't push
--- you; in the ring aura it floats over the head of the one protected. Bomb Jump Clutch is off
--- while this is on (not as the MM2 murderer, when it's left alone); Bomb Fling comes first:
--- while it flings, the bomb is its, and afterwards it's taken back if it's still out.
+-- whenever none is and the toy is ready, putting back what you held; or the one you throw),
+-- never solid on your screen, so it can't push you. It isn't one of the fireflies: it floats
+-- over your head, tumbling, until a knife is thrown at you (MMV: or the one with the gun fires
+-- at you), when it's put ahead of the fireflies, still, its broad side to where that comes
+-- from. Not with MM2's Hidden Knife Interception. Bomb Jump Clutch is off while this is on (not
+-- as the MM2 murderer, when it's left alone, nor with Hidden Knife Interception); Bomb Fling
+-- comes first: while it flings, the bomb is its, and afterwards it's taken back if it's still out.
 local fakeBomb={part=nil,collide=nil,deploying=false,checkAt=0,readyAt=0}
 local function bombAlive(part)
     if not part or not part.Parent or not part:IsDescendantOf(workspace) then return false end
@@ -21021,7 +21226,7 @@ local function bombFlinging()
 end
 local function releaseBomb()
     local part=fakeBomb.part
-    fakeBomb.part=nil
+    fakeBomb.part=nil;fakeBomb.pose=nil
     diagnostics.fakeBomb=false
     if part then
         offsets[part]=nil;offsetAnchor[part]=nil;pinned[part]=nil
@@ -21541,6 +21746,34 @@ local function aimingToThrow(plr)
         if id and THROW_POSE[id] then return true end
     end
     return false
+end
+-- (MMV: the one with the gun firing: their gun's Shoot playing on them, or its Gunshot sound
+-- just starting; counted for 2 s after the last shot seen)
+local SHOT_HOLD=2
+local lastShot=setmetatable({}, {__mode="k"})
+local function firing(plr)
+    local character=plr and plr.Character
+    if not character then return false end
+    local now=os.clock()
+    local fired=false
+    pcall(function()
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        local animator=humanoid and humanoid:FindFirstChildOfClass("Animator")
+        for _,track in ipairs((animator or humanoid):GetPlayingAnimationTracks()) do
+            local name=tostring(track.Name):lower()
+            local id=track.Animation and tostring(track.Animation.AnimationId) or ""
+            if name=="shoot" or id:find("124281955370937",1,true) then fired=true;break end
+        end
+    end)
+    if not fired then
+        pcall(function()
+            local held=character:FindFirstChildOfClass("Tool")
+            local sound=held and held:FindFirstChild("Gunshot",true)
+            if sound and sound:IsA("Sound") and sound.IsPlaying and sound.TimePosition<0.5 then fired=true end
+        end)
+    end
+    if fired then lastShot[plr]=now end
+    return lastShot[plr]~=nil and now-lastShot[plr]<SHOT_HOLD
 end
 -- (where their knife would leave from: the knife in their hand, else about their shoulder)
 local function throwOrigin(threat)
@@ -22079,15 +22312,58 @@ local function computeBlocksClutch(root)
     if not isMMV and iHaveKnife() then return false end
     return true
 end
--- (the Fake Bomb tumbles over and over as it goes: flipping forward and sideways at once,
+-- (over your head the Fake Bomb tumbles over and over: flipping forward and sideways at once,
 -- like a ball spinning every way)
 local BOMB_SPIN=Vector3.new(5.2,2.3,3.9)
--- The game takes a thrown Fake Bomb back from you (only it moves it from then on, so it only
--- moves on your screen) when it's jumped about: it's never put anywhere, only steered by
--- its speed, the way a thrown bomb moves, at most 30 studs a second faster than you, turning
--- over as it goes; and only while it's yours. (Bomb Fling still moves it its own way.)
+-- Over your head it's steered there by its speed, the way a thrown bomb moves, at most 30
+-- studs a second faster than you, turning over as it goes; put ahead of the shield it's put
+-- there like a firefly. Only while it's yours: one the game keeps to itself (only it moves it
+-- then, so it would only move on your screen) is left alone. (Bomb Fling moves it its own way.)
 local BOMB_GLIDE=30
+-- (where it goes: 3 studs over your head; protecting, ahead of the fireflies: 1.5 studs past
+-- where Knife Shield's stop the knife, 0.8 past Knife Interception's furthest row, just in front
+-- of MMV's knife, 0.85 out from MMV's shield)
+local BOMB_HEAD=3
+local BOMB_AHEAD=1.5
+local BOMB_ROWS=0.8
+local BOMB_LEAD=1.2
+local BOMB_GRID=0.85
+-- (MM2's Hidden Knife Interception doesn't use the Fake Bomb)
+local function bombAllowed() return isMMV or not settings.sky end
+-- Protecting, the Fake Bomb isn't one of the formation but goes ahead of it, put there like a
+-- firefly (carried along with the one protected), never turning: its broad side (the face
+-- across its two longest sides) toward the one it shields from.
+local function broadside(part,facing)
+    local size=part.Size
+    local axes={{size.X,1},{size.Y,2},{size.Z,3}}
+    table.sort(axes,function(a,b) return a[1]<b[1] end)
+    local normal=facing.Unit
+    local across=normal:Cross(Vector3.yAxis)
+    if across.Magnitude<0.05 then across=normal:Cross(Vector3.xAxis) end
+    across=across.Unit
+    local other=across:Cross(normal).Unit
+    local world={}
+    world[axes[1][2]]=normal;world[axes[3][2]]=across;world[axes[2][2]]=other
+    if world[1]:Cross(world[2]):Dot(world[3])<0 then world[axes[2][2]]=-other end
+    return CFrame.fromMatrix(Vector3.zero,world[1],world[2],world[3])
+end
+local function placeBomb(part,target,facing,anchor,dt,snap)
+    if not owned(part) then fakeBomb.pose=nil;return end
+    local base=anchor.Position+LIFT
+    local wanted=target-base
+    local pose=fakeBomb.pose
+    local current=pose and pose.anchor==anchor and pose.offset or (part.Position-base)
+    if snap or (wanted-current).Magnitude>14 then current=wanted
+    else current=current:Lerp(wanted,math.clamp(1-math.exp(-dt*18),0,1)) end
+    local turn=(facing and facing.Magnitude>0.01) and broadside(part,facing) or (pose and pose.rotation) or (part.CFrame-part.Position)
+    local rotation=(pose and pose.rotation and not snap) and pose.rotation:Lerp(turn,math.clamp(1-math.exp(-dt*14),0,1)) or turn
+    fakeBomb.pose={anchor=anchor,offset=current,rotation=rotation,pinned=snap==true}
+    part.CFrame=CFrame.new(base+current)*rotation
+    part.AssemblyLinearVelocity=snap and Vector3.zero or anchor.AssemblyLinearVelocity
+    part.AssemblyAngularVelocity=Vector3.zero
+end
 local function glideBomb(part,target,anchor,dt,turnSpeed)
+    fakeBomb.pose=nil
     if not owned(part) then return end
     local velocity=(target-part.Position)*12
     if velocity.Magnitude>BOMB_GLIDE then velocity=velocity.Unit*BOMB_GLIDE end
@@ -22240,8 +22516,7 @@ local function step(dt)
     for _,part in ipairs(list) do free[#free+1]=part end
     -- (the jar's lid, while it's out, takes a place in the formation like a firefly)
     for part in pairs(caps) do free[#free+1]=part end
-    -- (the Fake Bomb too, tumbling as it goes; in the ring aura it floats over the head of the
-    -- one protected instead. Not while Bomb Fling is flinging with it)
+    -- (the Fake Bomb: let go while Bomb Fling flings with it)
     local bomb=fakeBomb.part
     if bomb and (not bombAlive(bomb) or bombFlinging() or not settings.fakeBomb) then releaseBomb();bomb=nil end
     -- (the game has taken it back: it only moves on your screen now, so it's left alone)
@@ -22255,18 +22530,18 @@ local function step(dt)
             end
         end
     end
+    if bomb and not bombAllowed() then releaseBomb();bomb=nil end
     diagnostics.fakeBomb=bomb~=nil
-    if bomb then free[#free+1]=bomb end
+    -- (the Fake Bomb isn't one of the formation, so it never takes a firefly's place: where it
+    -- goes, and which way it faces, is worked out on its own as the formation is)
+    local bombAt,bombFacing,bombSnap=nil,nil,false
     local lookYaw=math.atan2(-root.CFrame.LookVector.X,-root.CFrame.LookVector.Z)
-    -- (a spot in a knife's way goes to the nearest firefly. MM2: the Fake Bomb, solid for
-    -- the game and far bigger than a firefly, takes the first spot, right on the knife's line;
-    -- on your screen it stays never solid, so it can't push you. MMV: never the bomb)
-    local function take(point,bombFirst)
+    -- (a spot in a knife's way goes to the nearest firefly)
+    local function take(point)
         local best,bestIndex,bestDistance=nil,nil,math.huge
         for index,part in ipairs(free) do
-            if part==bomb and bombFirst and not isMMV then best,bestIndex=part,index;break end
             local distance=(part.Position-point).Magnitude
-            if distance<bestDistance and (part~=bomb or not isMMV) then best,bestIndex,bestDistance=part,index,distance end
+            if distance<bestDistance then best,bestIndex,bestDistance=part,index,distance end
         end
         if best then targets[best]=point;solid[best]=true;table.remove(free,bestIndex) end
         return best
@@ -22291,14 +22566,19 @@ local function step(dt)
                 local angle=(2*math.pi/count)*(n-1)
                 take(threat.position+Vector3.new(math.cos(angle)*0.15,math.sin(angle)*0.15,0))
             end
+            -- (the Fake Bomb just in front of it on its line, its broad side to it)
+            local lead=math.clamp(threat.along-2,0,BOMB_LEAD)
+            bombAt,bombFacing,bombSnap=threat.position+threat.direction*lead,-threat.direction,true
             kind="on the knife"
         else
             -- Knife Shield: every firefly to the spot it would hit
             local spots,impact=nil,nil
             if mode.shield then spots,impact=clusterSpots(threat,center,#free) end
             if spots then
-                for index,point in ipairs(spots) do if #free==0 then break end;take(point,index==1) end
+                for _,point in ipairs(spots) do if #free==0 then break end;take(point) end
                 diagnostics.lastImpact=impact
+                -- (the Fake Bomb ahead of them, right on the knife's line, its broad side to the knife)
+                bombAt,bombFacing,bombSnap=impact-threat.direction*BOMB_AHEAD,-threat.direction,true
                 kind="blocking a knife"
             else
                 -- Knife Interception: along its path, between it and the one protected, out as
@@ -22308,7 +22588,13 @@ local function step(dt)
                 local studs=mode.intercept and settings.interceptStuds or INTERCEPT_STUDS
                 local fixedAt=mode.sky and settings.distance*settings.blockScale or nil
                 local count=fixedAt and #free or math.min(#free,math.ceil(7*studs/INTERCEPT_STUDS)*#CROSS)
-                for index,point in ipairs(interceptPoints(threat,count,studs,fixedAt)) do take(point,index==1) end
+                local rows=interceptPoints(threat,count,studs,fixedAt)
+                for _,point in ipairs(rows) do take(point) end
+                -- (the Fake Bomb past the furthest row, on its line, still in front of the knife)
+                local furthest=0
+                for _,point in ipairs(rows) do furthest=math.max(furthest,(point-threat.closest):Dot(-threat.direction)) end
+                local out=math.max(math.min(furthest+BOMB_ROWS,threat.along-0.3),2.2*settings.blockScale)
+                bombAt,bombFacing,bombSnap=threat.closest-threat.direction*out,-threat.direction,true
                 kind=mode.shield and "blocking a knife" or "intercepting a knife"
             end
         end
@@ -22394,14 +22680,13 @@ local function step(dt)
     local swarm=false
     local sky=false
     local ready=false
-    local orbitArgs=nil
     local function idle(radius,speed,label)
         if pointAt then
             swarm=true
             kind=kind or "following the mouse"
             return swarmSpots(count,pointAt,center,clock)
         end
-        orbit=true;orbitArgs={radius,speed}
+        orbit=true
         kind=kind or label
         return orbitSpots(count,radius,speed,clock)
     end
@@ -22444,12 +22729,19 @@ local function step(dt)
                     grid=true
                     active=true
                     kind=kind or ("shielding from "..gunHolder.player.Name)
+                    -- (firing at you: the Fake Bomb ahead of the shield, its broad side to them)
+                    if bomb and not bombAt and not guardRoot and #spots>0 and firing(gunHolder.player) then
+                        local middle=Vector3.zero
+                        for _,offset in ipairs(spots) do middle=middle+offset end
+                        middle=middle/#spots
+                        bombAt,bombFacing=center+middle+smoothDirection.Unit*BOMB_GRID,smoothDirection.Unit
+                    end
                 elseif pointAt then
                     -- (hidden and far: not needed, so Follow Mouse while you point)
                     spots=idle(settings.ringDistance,settings.ringSpeed*0.6,"ring aura")
                 else
                     -- (hidden and far: the ring aura round you)
-                    orbit=true;orbitArgs={settings.ringDistance,settings.ringSpeed*0.6}
+                    orbit=true
                     spots=orbitSpots(count,settings.ringDistance,settings.ringSpeed*0.6,clock)
                     kind=kind or "behind a wall (far): ring aura"
                 end
@@ -22539,20 +22831,30 @@ local function step(dt)
     kind=kind or "idle"
     if guardPlayer then kind=kind..(forGuard and " (protecting "..guardPlayer.Name..")" or " (nobody's after "..guardPlayer.Name..": protecting you)") end
     if not grid then smoothDirection=nil end
-    -- (the ring aura: the Fake Bomb isn't one of the ring but floats over the head of the one
-    -- protected, the ring closed up without it)
-    if bomb and orbit and orbitArgs and table.find(free,bomb) then
-        table.remove(free,table.find(free,bomb))
-        count=#free
-        spots=orbitSpots(count,orbitArgs[1],orbitArgs[2],clock)
-        targets[bomb]=center+Vector3.new(0,3+math.sin(clock*2.4)*0.25,0)
-    end
-    -- (MM2, ready for a throw: the Fake Bomb waits on the first spot, right on the way the
-    -- knife would come, where it goes once the knife is thrown)
-    if bomb and ready and not isMMV and spots and #spots>1 and table.find(free,bomb) then
-        table.remove(free,table.find(free,bomb))
-        targets[bomb]=center+table.remove(spots,1)
-        count=#free
+    -- The Fake Bomb: over your head, turning as fast as Fake Bomb Spin Speed says, whatever the
+    -- fireflies are doing, until a knife is thrown at you (MMV: or the one with the gun fires at
+    -- you); then it's put ahead of the fireflies, its broad side to where that comes from, and
+    -- still, and once it's over it's back over your head. (Protecting someone else it stays over
+    -- your own head.)
+    diagnostics.bombMode=nil
+    if bomb then
+        if bombAt and not guardRoot then
+            -- (kept where it stays yours: brought in toward you if it would be nearer someone else)
+            if not own.mine(bombAt) then
+                local toward=bombAt-center
+                local share=1
+                while share>0.3 and not own.mine(center+toward*share) do share=share-0.1 end
+                bombAt=center+toward*math.max(share,0.3)
+            end
+            diagnostics.bombMode="shielding"
+            local ok,err=pcall(placeBomb,bomb,bombAt,bombFacing,me,dt,bombSnap)
+            if not ok then diagnostics.bombError=tostring(err) end
+        else
+            diagnostics.bombMode="over your head"
+            local head=me.Position+LIFT+Vector3.new(0,BOMB_HEAD+math.sin(clock*2.4)*0.25,0)
+            local ok,err=pcall(glideBomb,bomb,head,me,dt,settings.bombSpin*2*math.pi)
+            if not ok then diagnostics.bombError=tostring(err) end
+        end
     end
     diagnostics.threat=kind;diagnostics.mode=kind;diagnostics.active=active
     if spots then
@@ -22616,9 +22918,6 @@ local function step(dt)
     for part,target in pairs(targets) do
         pcall(function()
             local anchor=anchorOf[part] or root
-            -- (the Fake Bomb: steered there by its speed, never put there; idling with the
-            -- fireflies it turns as fast as Fake Bomb Spin Speed says)
-            if part==bomb then glideBomb(part,target,anchor,dt,orbit and settings.bombSpin*2*math.pi or nil);return end
             local base=anchor.Position+LIFT
             local wanted=target-base
             local current=offsets[part]
@@ -22647,6 +22946,11 @@ local function holdInPlace()
                 pcall(function() part.CFrame=CFrame.new(anchor.Position+LIFT+offset) end)
             end
         end
+    end
+    -- (the Fake Bomb too, while it's put ahead of the shield)
+    local bomb,pose=fakeBomb.part,fakeBomb.pose
+    if bomb and pose and not pose.pinned and pose.anchor and pose.anchor.Parent then
+        pcall(function() bomb.CFrame=CFrame.new(pose.anchor.Position+LIFT+pose.offset)*pose.rotation end)
     end
 end
 
@@ -22698,13 +23002,13 @@ local function statusText()
     end
     return text
 end
--- Use Fake Bomb As Particle Helper. The bomb is thrown the way Bomb Jump throws it, which is
--- what works in the game: the toy in your hand (for as long as Bomb Jump keeps it there), its
--- Remote told where to put the bomb (a little in front of you, so the game hands it to you),
--- and the toy put back with what you held back in your hand. The bomb that turns up there is
--- the one kept, and so is one you throw yourself. The toy is ready again 22 s after a throw
--- (Bomb Jump's own wait); a try that doesn't work waits longer each time. Why it isn't out is
--- in the status.
+-- Use Fake Bomb As Particle Helper. The bomb is thrown the way you throw it yourself: the toy
+-- in your hand, clicked (the game hands you a bomb thrown that way, so it's yours to move; one
+-- thrown by its Remote, Bomb Jump's way, it can keep to itself, so that's only tried when the
+-- click brings nothing), and the toy put back with what you held back in your hand. The bomb
+-- that turns up is the one kept, and so is one you throw yourself. The toy is ready again 22 s
+-- after a throw (Bomb Jump's own wait); a try that doesn't work waits longer each time. Why it
+-- isn't out is in the status.
 local BOMB_COOLDOWN=22
 local function bombWhy(text) diagnostics.fakeBombWhy=text end
 -- (in someone's character, a hat, a backpack, or one of the add-on's own things)
@@ -22773,22 +23077,13 @@ local function throwFakeBomb()
     if not tool then return nil,"you don't have the Fake Bomb toy" end
     local remote=tool:FindFirstChild("Remote")
     if not (remote and remote:IsA("RemoteEvent")) then remote=tool:FindFirstChildWhichIsA("RemoteEvent",true) end
-    if not remote then
-        -- (a Fake Bomb without a Remote: Bomb Fling's way)
-        local fling=runtime.BombFling
-        if fling and type(fling.GetBomb)=="function" then
-            local ok,part=pcall(fling.GetBomb)
-            if ok and typeof(part)=="Instance" then return part end
-        end
-        return nil,"the Fake Bomb has no Remote"
-    end
     local backpack=LocalPlayer:FindFirstChildOfClass("Backpack")
     local held=nil
     for _,child in ipairs(character:GetChildren()) do
         if child:IsA("Tool") and child~=tool then held=child;break end
     end
     local position=root.Position+(flat(root.CFrame.LookVector) or Vector3.zAxis)*4-Vector3.new(0,3,0)
-    fakeBomb.found=nil;fakeBomb.anyNew=nil;fakeBomb.throwFrom=position;fakeBomb.throwAt=os.clock()
+    fakeBomb.found=nil;fakeBomb.anyNew=nil;fakeBomb.throwFrom=position;fakeBomb.throwAt=os.clock();fakeBomb.thrownBy="click"
     local finder=runtime.ThrownBomb
     local thrownWatch=nil
     if finder and type(finder.Begin)=="function" then
@@ -22804,11 +23099,19 @@ local function throwFakeBomb()
     end
     pcall(function() tool.Parent=character end)
     RunService.Heartbeat:Wait()
-    pcall(function() remote:FireServer(CFrame.new(position),50) end)
+    -- (thrown the way you throw it yourself, as a click with it in your hand: the game hands you a
+    -- bomb thrown that way, so it's yours to move. Only if nothing comes of that is its Remote told
+    -- where to put it, Bomb Jump's way: a bomb thrown that way the game can keep to itself)
+    pcall(function() tool:Activate() end)
     fakeBomb.readyAt=os.clock()+BOMB_COOLDOWN
-    -- (kept in hand as long as Bomb Jump keeps it, so the game still has it out as it throws)
-    local deadline=os.clock()+0.5
+    local deadline=os.clock()+0.9
     while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+    if not lookNow() and remote and tool.Parent==character then
+        fakeBomb.thrownBy="remote"
+        pcall(function() remote:FireServer(CFrame.new(position),50) end)
+        deadline=os.clock()+0.5
+        while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+    end
     if tool.Parent==character then pcall(function() tool.Parent=backpack or tool.Parent end) end
     if held and held.Parent and held.Parent~=character then pcall(function() humanoid:EquipTool(held) end) end
     -- (your hands are free again: the jar can be used while the bomb is looked for; Auto Get
@@ -22838,12 +23141,13 @@ local function throwFakeBomb()
         local seen=finder and finder.lastSeen
         return nil,"the thrown bomb wasn't found"..(seen and (" (near you: "..tostring(seen)..")") or "")
     end
+    diagnostics.bombThrownBy=fakeBomb.thrownBy
     return wholeBomb(found)
 end
 -- a part that has just turned up in the map, while a bomb was just thrown (by the add-on, or
 -- by you with the Fake Bomb in your hand)
 local function bombLanded(object,ours)
-    if not object.Parent or not settings.fakeBomb then return end
+    if not object.Parent or not settings.fakeBomb or not bombAllowed() then return end
     local root=myRoot()
     local from=ours and fakeBomb.throwFrom or (root and root.Position)
     if not from then return end
@@ -22870,6 +23174,12 @@ end
 -- one thrown out, looked at every quarter of a second)
 local function bombStep()
     if not settings.fakeBomb or not runtimeAlive then releaseBomb();return end
+    -- (not with MM2's Hidden Knife Interception: left alone, never thrown, so Bomb Jump works)
+    if not bombAllowed() then
+        releaseBomb();fakeBomb.manualWatch=nil
+        bombWhy("not used with Hidden Knife Interception")
+        return
+    end
     local now=os.clock()
     local character=LocalPlayer.Character
     local inHand=character and character:FindFirstChildOfClass("Tool")
@@ -23186,11 +23496,13 @@ if isMMV then
         settings.ringSpeed=math.clamp(tonumber(value) or MMV_OWN.default("ringSpeed"),0,10);SetCfg(MMV_OWN.key("ringSpeed"),settings.ringSpeed)
     end)
     -- (how far the shield sits off your body while it's shielding: 2 is right against you, 1
-    -- up to a stud closer still, 5 three studs off; in hundredths)
-    section:AddSlider("Shield Distance",1.01,5,settings.shieldDistance,function(value)
-        settings.shieldDistance=math.clamp(tonumber(value) or 2,1,5)
-        settings.shieldGap=settings.shieldDistance-2
-        SetCfg("fireflyMMV_ShieldDistance",settings.shieldDistance)
+    -- up to a stud closer still, 3 a stud off; in thousandths)
+    section:AddSlider("Shield Distance",1.001,SHIELD_MAX,math.max(settings.shieldDistance,1.001),function(value)
+        local distance=math.clamp(tonumber(value) or 2,1,SHIELD_MAX)
+        if distance<1.0015 then distance=1 end
+        settings.shieldDistance=distance
+        settings.shieldGap=distance-2
+        SetCfg("fireflyMMV_ShieldDistance",distance)
     end)
 else
     -- (1 to 4 studs, in steps of a hundredth)
@@ -23209,7 +23521,7 @@ else
         settings.blockScale=scale;SetCfg("fireflyBlockScale",scale)
     end)
 end
--- (how fast the Fake Bomb turns while it idles with the fireflies: 1 to 5 turns a second)
+-- (how fast the Fake Bomb turns over your head: 1 to 5 turns a second)
 section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
     settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
     SetCfg(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",settings.bombSpin)
@@ -23239,8 +23551,9 @@ runtime.FireflyProtection={
     end,
     UseJar=useJar,
     -- (Bomb Jump Clutch is off while the Fake Bomb is a particle helper; not as the MM2
-    -- murderer, when protection is paused and the bomb left alone)
-    UsesFakeBomb=function() return settings.fakeBomb==true and not murdererMe(myRoot()) end,
+    -- murderer, when protection is paused and the bomb left alone, nor with Hidden Knife
+    -- Interception, which doesn't use it)
+    UsesFakeBomb=function() return settings.fakeBomb==true and bombAllowed() and not murdererMe(myRoot()) end,
     -- (the bomb it keeps out as a particle helper: Bomb Fling flings with it first)
     CurrentBomb=function() return fakeBomb.part end,
     -- (Firefly Clutch can't be used while protection is working: not while you're the
