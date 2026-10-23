@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-53"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-54"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -12064,7 +12064,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-53",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-22-fixes-54",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -20106,6 +20106,9 @@ runtime.BombFling={Fling=fling,GetBomb=getBomb,
     OwnBomb=function() return ownBomb and usable(ownBomb) and ownBomb or nil end,
     -- (so Firefly Protection never takes a bomb for a firefly)
     IsBomb=function(part) return bombs[part]~=nil or part==ownBomb end,
+    -- (the nearest Fake Bomb that's yours to move, for Firefly Protection to take: one like your
+    -- toy, within that many studs of you)
+    NearestOwnedBomb=function(within) return nearestOwnedBomb(false,within,bombSignature(findBombTool())) end,
     GetDiagnostics=function()
     local count=0
     for _ in pairs(bombs) do count=count+1 end
@@ -20915,7 +20918,8 @@ end)()
 --    whenever none is out and it's ready (the way you throw it yourself), or the one you throw
 --    yourself. It's never one of the fireflies (it never takes a firefly's place): it floats
 --    over your head, tumbling over and over, whatever they're doing, until a knife is thrown
---    at you (MMV: or the one with the gun fires at you); then it's put ahead of the fireflies,
+--    at you (MMV: or the one with the gun fires at you, or with Fake Bomb Ahead Of Fireflies
+--    on, the whole time the Gun Shield is up); then it's put ahead of the fireflies,
 --    still, its broad side to where that comes from: solid for the game and far bigger than a
 --    firefly (on your screen never solid, so it can't push you). Not used with Hidden Knife
 --    Interception. As the MM2 murderer (protection paused) it's left alone, so Bomb Jump works
@@ -21004,6 +21008,9 @@ local settings={
     mouse=MMV_OWN.toggle("mouse"),
     autoJar=MMV_OWN.toggle("autoJar"),
     fakeBomb=MMV_OWN.toggle("fakeBomb"),
+    -- (MMV: the Fake Bomb ahead of the fireflies whenever the Gun Shield is up, not only once
+    -- the one with the gun fires; off on a clean install)
+    bombAhead=isMMV and C("fireflyMMV_FakeBombAhead",false)==true or false,
     protectOther=MMV_OWN.toggle("protectOther"),
     protectIntercept=not isMMV and C("fireflyProtectOtherIntercept",false)==true,
     protectShield=not isMMV and C("fireflyProtectOtherShield",false)==true,
@@ -21208,11 +21215,27 @@ local pinned=setmetatable({}, {__mode="k"})
 -- whenever none is and the toy is ready, putting back what you held; or the one you throw),
 -- never solid on your screen, so it can't push you. It isn't one of the fireflies: it floats
 -- over your head, tumbling, until a knife is thrown at you (MMV: or the one with the gun fires
--- at you), when it's put ahead of the fireflies, still, its broad side to where that comes
+-- at you, or with Fake Bomb Ahead Of Fireflies on, the whole time the Gun Shield is up), when
+-- it's put ahead of the fireflies, still, its broad side to where that comes
 -- from. Not with MM2's Hidden Knife Interception. Bomb Jump Clutch is off while this is on (not
 -- as the MM2 murderer, when it's left alone, nor with Hidden Knife Interception); Bomb Fling
 -- comes first: while it flings, the bomb is its, and afterwards it's taken back if it's still out.
 local fakeBomb={part=nil,collide=nil,deploying=false,checkAt=0,readyAt=0}
+-- (how the add-on's own throws have turned out, each way of throwing: one that brought no bomb,
+-- and a bomb the game kept to itself. Twice for a way and that way isn't used again; with none
+-- left the add-on stops throwing and leaves it to you: a bomb you throw yourself is yours to
+-- move. A way that brings a bomb you keep starts over. Counted afresh when it's switched back
+-- on. The ways, in the order they're tried: a click with it in your hand; its Remote told to
+-- throw it far ahead, as your own throw goes; its Remote told to put it just in front of you,
+-- Bomb Jump's way)
+local WAYS={"click","far","near"}
+local function freshWays()
+    local ways={}
+    for _,name in ipairs(WAYS) do ways[name]={nothing=0,kept=0} end
+    return ways
+end
+fakeBomb.ways=freshWays()
+local function wayUsable(name) local way=fakeBomb.ways[name];return way.nothing<2 and way.kept<2 end
 local function bombAlive(part)
     if not part or not part.Parent or not part:IsDescendantOf(workspace) then return false end
     local ok,y=pcall(function() return part.Position.Y end)
@@ -21236,10 +21259,17 @@ local function releaseBomb()
 end
 local function adoptBomb(part)
     if fakeBomb.part==part then return end
-    -- (one the game took back is only taken again once it's yours again)
+    -- (one the game took back is only taken again once it's yours again; one of the add-on's,
+    -- then not held against the way it was thrown)
     if fakeBomb.keptByGame==part then
         if not owned(part) then return end
         fakeBomb.keptByGame=nil
+        local thrown=fakeBomb.thrown
+        if thrown and thrown.part==part and thrown.counted then
+            local way=fakeBomb.ways[thrown.how]
+            if way and way.kept>0 then way.kept=way.kept-1 end
+            thrown.counted=false;thrown.settled=false;thrown.at=os.clock()
+        end
     end
     releaseBomb()
     fakeBomb.part=part;fakeBomb.last=part
@@ -22322,12 +22352,12 @@ local BOMB_SPIN=Vector3.new(5.2,2.3,3.9)
 local BOMB_GLIDE=30
 -- (where it goes: 3 studs over your head; protecting, ahead of the fireflies: 1.5 studs past
 -- where Knife Shield's stop the knife, 0.8 past Knife Interception's furthest row, just in front
--- of MMV's knife, 0.85 out from MMV's shield)
+-- of MMV's knife, 1.15 out from MMV's shield, clear of both its layers)
 local BOMB_HEAD=3
 local BOMB_AHEAD=1.5
 local BOMB_ROWS=0.8
 local BOMB_LEAD=1.2
-local BOMB_GRID=0.85
+local BOMB_GRID=1.15
 -- (MM2's Hidden Knife Interception doesn't use the Fake Bomb)
 local function bombAllowed() return isMMV or not settings.sky end
 -- Protecting, the Fake Bomb isn't one of the formation but goes ahead of it, put there like a
@@ -22521,10 +22551,24 @@ local function step(dt)
     if bomb and (not bombAlive(bomb) or bombFlinging() or not settings.fakeBomb) then releaseBomb();bomb=nil end
     -- (the game has taken it back: it only moves on your screen now, so it's left alone)
     if bomb then
-        if owned(bomb) then fakeBomb.notOursSince=nil
+        local thrown=fakeBomb.thrown
+        if owned(bomb) then
+            fakeBomb.notOursSince=nil
+            -- (one the add-on threw, still yours 2 s on: that way of throwing works)
+            if thrown and thrown.part==bomb and not thrown.settled and os.clock()-thrown.at>2 then
+                thrown.settled=true
+                local way=fakeBomb.ways[thrown.how]
+                if way then way.kept=0;way.nothing=0 end
+            end
         else
             fakeBomb.notOursSince=fakeBomb.notOursSince or os.clock()
             if os.clock()-fakeBomb.notOursSince>0.6 then
+                -- (one the add-on threw that the game keeps: counted against that way)
+                if thrown and thrown.part==bomb and not thrown.settled then
+                    thrown.settled=true;thrown.counted=true
+                    local way=fakeBomb.ways[thrown.how]
+                    if way then way.kept=way.kept+1 end
+                end
                 fakeBomb.keptByGame=bomb;fakeBomb.notOursSince=nil
                 releaseBomb();bomb=nil
             end
@@ -22729,8 +22773,10 @@ local function step(dt)
                     grid=true
                     active=true
                     kind=kind or ("shielding from "..gunHolder.player.Name)
-                    -- (firing at you: the Fake Bomb ahead of the shield, its broad side to them)
-                    if bomb and not bombAt and not guardRoot and #spots>0 and firing(gunHolder.player) then
+                    -- (the Fake Bomb ahead of the shield, clear of every firefly in it, its broad side
+                    -- to them: the whole time the shield is up with Fake Bomb Ahead Of Fireflies on,
+                    -- else once they fire at you)
+                    if bomb and not bombAt and not guardRoot and #spots>0 and (settings.bombAhead or firing(gunHolder.player)) then
                         local middle=Vector3.zero
                         for _,offset in ipairs(spots) do middle=middle+offset end
                         middle=middle/#spots
@@ -23003,10 +23049,13 @@ local function statusText()
     return text
 end
 -- Use Fake Bomb As Particle Helper. The bomb is thrown the way you throw it yourself: the toy
--- in your hand, clicked (the game hands you a bomb thrown that way, so it's yours to move; one
--- thrown by its Remote, Bomb Jump's way, it can keep to itself, so that's only tried when the
--- click brings nothing), and the toy put back with what you held back in your hand. The bomb
--- that turns up is the one kept, and so is one you throw yourself. The toy is ready again 22 s
+-- in your hand, clicked (the game hands you a bomb you throw, so it's yours to move; one thrown
+-- by its Remote, Bomb Jump's way, it can keep to itself, so that's only tried when the click
+-- brings nothing), and the toy put back with what you held back in your hand. The bomb that
+-- turns up is the one kept, and so is one you throw yourself, and any Fake Bomb near you that's
+-- yours to move. A way of throwing that twice brings nothing, or a bomb the game keeps to
+-- itself, isn't used again; with neither left the add-on stops throwing (each throw would only
+-- hold the toy up for you) and a bomb you throw yourself is taken. The toy is ready again 22 s
 -- after a throw (Bomb Jump's own wait); a try that doesn't work waits longer each time. Why it
 -- isn't out is in the status.
 local BOMB_COOLDOWN=22
@@ -23063,6 +23112,8 @@ local function fakeBombTool()
         end
     end
 end
+local CLICK_WAIT=2.5
+local REMOTE_WAIT=1.2
 local function throwFakeBomb()
     local root,character=myRoot()
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
@@ -23083,7 +23134,8 @@ local function throwFakeBomb()
         if child:IsA("Tool") and child~=tool then held=child;break end
     end
     local position=root.Position+(flat(root.CFrame.LookVector) or Vector3.zAxis)*4-Vector3.new(0,3,0)
-    fakeBomb.found=nil;fakeBomb.anyNew=nil;fakeBomb.throwFrom=position;fakeBomb.throwAt=os.clock();fakeBomb.thrownBy="click"
+    fakeBomb.found=nil;fakeBomb.foundBy=nil;fakeBomb.anyNew=nil;fakeBomb.throwFrom=position;fakeBomb.throwAt=os.clock()
+    fakeBomb.thrownBy=nil
     local finder=runtime.ThrownBomb
     local thrownWatch=nil
     if finder and type(finder.Begin)=="function" then
@@ -23093,24 +23145,38 @@ local function throwFakeBomb()
     local function lookNow()
         if not fakeBomb.found and thrownWatch then
             local ok,found=pcall(finder.Find,thrownWatch)
-            if ok and typeof(found)=="Instance" then fakeBomb.found=found end
+            if ok and typeof(found)=="Instance" then fakeBomb.found=found;fakeBomb.foundBy=fakeBomb.thrownBy end
         end
         return fakeBomb.found
     end
     pcall(function() tool.Parent=character end)
     RunService.Heartbeat:Wait()
-    -- (thrown the way you throw it yourself, as a click with it in your hand: the game hands you a
-    -- bomb thrown that way, so it's yours to move. Only if nothing comes of that is its Remote told
-    -- where to put it, Bomb Jump's way: a bomb thrown that way the game can keep to itself)
-    pcall(function() tool:Activate() end)
     fakeBomb.readyAt=os.clock()+BOMB_COOLDOWN
-    local deadline=os.clock()+0.9
-    while os.clock()<deadline and not lookNow() do task.wait(0.05) end
-    if not lookNow() and remote and tool.Parent==character then
-        fakeBomb.thrownBy="remote"
-        pcall(function() remote:FireServer(CFrame.new(position),50) end)
-        deadline=os.clock()+0.5
-        while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+    -- (the ways in turn, each given time to bring a bomb (a throw takes a moment), until one
+    -- does: first as a click with it in your hand, the way you throw it yourself (the game hands
+    -- you a bomb you throw, so it's yours to move); then its Remote told to throw it far ahead,
+    -- as your own throw goes; last its Remote told to put it just in front of you, Bomb Jump's
+    -- way (a bomb thrown that way the game can keep to itself))
+    local look=flat(root.CFrame.LookVector) or Vector3.zAxis
+    local deadline
+    for _,name in ipairs(WAYS) do
+        if lookNow() or tool.Parent~=character then break end
+        if wayUsable(name) and (name=="click" or remote) then
+            fakeBomb.thrownBy=name
+            if name=="click" then
+                -- (a moment in your hand first, as when you take it out and tap)
+                task.wait(0.2)
+                pcall(function() tool:Activate() end)
+            elseif name=="far" then
+                local target=root.Position+look*40+Vector3.new(0,1.5,0)
+                pcall(function() remote:FireServer(CFrame.new(target),50) end)
+            else
+                pcall(function() remote:FireServer(CFrame.new(position),50) end)
+            end
+            deadline=os.clock()+(name=="click" and CLICK_WAIT or REMOTE_WAIT)
+            while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+            if not lookNow() then fakeBomb.ways[name].nothing=fakeBomb.ways[name].nothing+1 end
+        end
     end
     if tool.Parent==character then pcall(function() tool.Parent=backpack or tool.Parent end) end
     if held and held.Parent and held.Parent~=character then pcall(function() humanoid:EquipTool(held) end) end
@@ -23141,7 +23207,8 @@ local function throwFakeBomb()
         local seen=finder and finder.lastSeen
         return nil,"the thrown bomb wasn't found"..(seen and (" (near you: "..tostring(seen)..")") or "")
     end
-    diagnostics.bombThrownBy=fakeBomb.thrownBy
+    fakeBomb.lastHow=fakeBomb.foundBy or fakeBomb.thrownBy or "click"
+    diagnostics.bombThrownBy=fakeBomb.lastHow
     return wholeBomb(found)
 end
 -- a part that has just turned up in the map, while a bomb was just thrown (by the add-on, or
@@ -23155,7 +23222,7 @@ local function bombLanded(object,ours)
     if not ok then return end
     if ours then
         if fakeBomb.found then return end
-        if away<30 and bombPartLike(object) then fakeBomb.found=object
+        if away<30 and bombPartLike(object) then fakeBomb.found=object;fakeBomb.foundBy=fakeBomb.thrownBy
         elseif away<10 and not fakeBomb.anyNew and not object.Anchored and not insideSomeone(object)
             and not fireflies[object] and not caps[object] and not object.Name:lower():find("firefl",1,true)
             and math.max(object.Size.X,object.Size.Y,object.Size.Z)<=3 then
@@ -23173,7 +23240,11 @@ end
 -- (none out, the toy ready, nothing else using your hands, Auto Get Tools done (12 s at most):
 -- one thrown out, looked at every quarter of a second)
 local function bombStep()
-    if not settings.fakeBomb or not runtimeAlive then releaseBomb();return end
+    if not settings.fakeBomb or not runtimeAlive then
+        releaseBomb()
+        if fakeBomb.waysUsed then fakeBomb.ways=freshWays();fakeBomb.waysUsed=false end
+        return
+    end
     -- (not with MM2's Hidden Knife Interception: left alone, never thrown, so Bomb Jump works)
     if not bombAllowed() then
         releaseBomb();fakeBomb.manualWatch=nil
@@ -23235,9 +23306,25 @@ local function bombStep()
             local ok,own=pcall(fling.OwnBomb)
             if ok and typeof(own)=="Instance" and bombAlive(own) and own~=kept then adoptBomb(own);bombWhy(nil);return end
         end
+        -- (and any Fake Bomb near you that's yours to move, however it got there: one you threw
+        -- yourself, or one of the add-on's the game has handed you after all)
+        if fling and type(fling.NearestOwnedBomb)=="function" then
+            local ok,own=pcall(fling.NearestOwnedBomb,45)
+            if ok and typeof(own)=="Instance" and bombAlive(own) and not insideSomeone(own) then
+                adoptBomb(wholeBomb(own));bombWhy(nil);return
+            end
+        end
     end
     if not protecting() then bombWhy("turn on a protection mode or the ring aura");return end
     if jar.busy then return end
+    -- (the add-on's own throws only while a way of throwing is left that may bring a bomb that's
+    -- yours: else it's left to you)
+    local anyWay=false
+    for _,name in ipairs(WAYS) do if wayUsable(name) then anyWay=true end end
+    if not anyWay then
+        bombWhy("the game keeps the bombs the add-on throws: throw it yourself and it's taken")
+        return
+    end
     if now<(fakeBomb.readyAt or 0) then
         local left=math.ceil(fakeBomb.readyAt-now)
         bombWhy(kept and ("the game took it back (only it moves it now): another in %ds"):format(left) or ("ready in %ds"):format(left))
@@ -23258,6 +23345,7 @@ local function bombStep()
     if holdingBomb then bombWhy("in your hand (throw it and it's kept)");return end
     fakeBomb.deploying=true
     bombWhy("throwing it out")
+    fakeBomb.waysUsed=true
     task.spawn(function()
         local ok,part,reason=pcall(throwFakeBomb)
         fakeBomb.deploying=false;fakeBomb.searching=false
@@ -23265,6 +23353,7 @@ local function bombStep()
         if ok and typeof(part)=="Instance" and bombAlive(part) and settings.fakeBomb and runtimeAlive and not bombFlinging() then
             fakeBomb.failures=0
             adoptBomb(part)
+            fakeBomb.thrown={part=part,how=fakeBomb.lastHow or "click",at=os.clock()}
             bombWhy(nil)
         else
             fakeBomb.failures=(fakeBomb.failures or 0)+1
@@ -23429,6 +23518,7 @@ local function refresh()
 end
 local controls={}
 local KEYS={shield=MMV_OWN.key("shield"),intercept="fireflyProtectIntercept",sky="fireflyProtectHidden",fakeBomb=MMV_OWN.key("fakeBomb"),
+    bombAhead="fireflyMMV_FakeBombAhead",
     ring=MMV_OWN.key("ring"),mouse=MMV_OWN.key("mouse"),autoJar=MMV_OWN.key("autoJar"),
     protectOther=MMV_OWN.key("protectOther"),protectIntercept="fireflyProtectOtherIntercept",protectShield="fireflyProtectOtherShield"}
 -- (one of each group at a time: turning one on turns the one that was on off)
@@ -23488,6 +23578,7 @@ else
 end
 add("Auto Use Firefly Jar","autoJar")
 add("Use Fake Bomb As Particle Helper","fakeBomb")
+if isMMV then add("Fake Bomb Ahead Of Fireflies","bombAhead") end
 if isMMV then
     section:AddSlider("Ring Distance",1,8,settings.ringDistance,function(value)
         settings.ringDistance=math.clamp(tonumber(value) or MMV_OWN.default("ringDistance"),1,8);SetCfg(MMV_OWN.key("ringDistance"),settings.ringDistance)
@@ -23543,7 +23634,7 @@ end
 runtime.FireflyProtection={
     Active=active,
     DisableAll=function()
-        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","protectOther","protectIntercept","protectShield"}) do
+        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","bombAhead","protectOther","protectIntercept","protectShield"}) do
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
@@ -23576,7 +23667,7 @@ runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.sky=false
-    settings.fakeBomb=false
+    settings.fakeBomb=false;settings.bombAhead=false
     releaseBomb()
     settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
     settings.distance,settings.interceptStuds,settings.blockScale=2.2,INTERCEPT_STUDS,1
