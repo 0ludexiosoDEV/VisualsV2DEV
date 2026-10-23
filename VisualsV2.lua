@@ -355,7 +355,7 @@ loadConfig()
 -- (a settings file emptied by Restore Defaults starts like a fresh install)
 if next(ConfigData)==nil and next(PositionData)==nil then freshInstall=true end
 
-env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-55"}
+env.VisualsV2Runtime = {Resetters = {}, Build = "2026-10-22-fixes-56"}
 -- Time-budgeted work queue. Big GUI changes (boot, opening the inventory, trading)
 -- push their objects here and they are handled a slice at a time instead of all at once.
 -- An optional limit caps the items per frame as well: restyling a label also costs the
@@ -12064,7 +12064,7 @@ env.VisualsV2Runtime.ClientWeaponSkins={
     end,
     GetNativeHolster=function(kind) return nativeHolster(player.Character,kind) end,
     GetDiagnostics=function()
-        local report={build="2026-10-22-fixes-55",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
+        local report={build="2026-10-22-fixes-56",stats=table.clone(skinStats),errors=table.clone(recentErrors),weapons={}}
         for kind,settings in pairs(kinds) do
             local entry=catalog[kind][settings.selected]
             local key=entry and cacheKey(entry)
@@ -20860,23 +20860,23 @@ end)()
 --  * Knife Block Distance (1 to 2): how far out from the body knives are stopped, from
 --    where it was (1) to twice as far out (2), for every mode (the Knife Shield's wall and
 --    the spot a knife would hit, the rows' nearest end, Hidden's fixed range).
---  * Knife Interception: a thrown knife coming at you gets fireflies along its path between
---    it and you (on the path and either side of it), out as far as the Interception
---    Distance slider says (7 to 25 studs along its path; 14, where it starts, is as far as
---    it went before; knives seen from 60 studs, further for more than 14); otherwise they
---    circle you.
+--  * Knife Interception: a thrown knife coming at you gets every firefly along its path
+--    between it and you (on the path and either side of it), in rows from 2.2 studs out to
+--    the Interception Distance (studs) (3 to 25 studs out along its path, starting at 5; never
+--    past the knife itself; knives seen from 60 studs, further past 14); otherwise they circle
+--    you.
 --  * Hidden Knife Interception: the fireflies wait scattered high above you (20 to 30 studs
 --    up, drifting), so nobody sees them round you; a knife coming at you brings them all
 --    straight down across its path at a fixed range round you (the Firefly Distance out to
---    2.6 studs further; the Interception Distance slider is Knife Interception's only),
+--    2.6 studs further; the Interception Distance (studs) slider is Knife Interception's only),
 --    then back up.
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
 --    a firefly or has flown its course, the fireflies are free for the next throw. MM2 puts
 --    each thrown knife's exact Direction on it, so its path is known the moment it's thrown;
 --    a knife thrown at someone else never pulls them off you. Both interceptions get their
 --    rows out across the way a throw would come while the murderer in sight winds one up
---    at the one protected, too; Knife Interception also while anyone in sight with their knife
---    out is too close for your ping, as the Knife Shield does.)
+--    at you, too; Knife Interception also while anyone in sight with their knife out is too
+--    close for your ping, as the Knife Shield does.)
 --    Wherever they go, a firefly is never put nearer another player than you: the game
 --    hands a loose part to the nearest player, and one handed to someone else stops nothing.
 --  MMV
@@ -20887,6 +20887,8 @@ end)()
 --    between alike), so no firefly is wasted far from you. Filled from the middle out as a
 --    square; more than 25 make a second, staggered layer just behind it. Behind a wall and 80
 --    studs or more away: the ring aura instead. A thrown knife at you: all onto the knife.
+--    With the Fake Bomb out, the bomb is in the middle of the shield the whole time it's up
+--    (see below), every firefly in a closed frame round it.
 --  Both (Firefly Ring Aura and Follow Mouse can be on together)
 --  * Firefly Ring Aura: the fireflies circle you, each rising and falling (MM2: it also
 --    makes the shield's fireflies swap places now and then).
@@ -20896,15 +20898,6 @@ end)()
 --    after the last tap or drag; then the ring aura again. Protection comes first: with a
 --    protection mode on, only while it isn't needed (MM2: no murderer in sight or near;
 --    MMV: the gun holder behind a wall and 80+ studs away).
---  * Protect Select User: the player you pick is the priority (Protect With Knife
---    Interception or Protect With Knife Shield in MM2; in MMV just the toggle, with the Gun
---    Shield): the fireflies are theirs whenever anyone who could hurt them is within 200
---    studs of them, even with the murderer right by you; you're protected (with your own
---    modes, or the way picked for them if none of yours is on) only while nobody at all is
---    after them, and with nothing going on the fireflies wait round them. The moment they
---    die (or are out of the round, or far off in the lobby), it's just you again. (The game hands
---    a loose part to whoever is nearest it; while the fireflies are over by them, your
---    client asks to keep them, and the status says how many only show on your screen.)
 --  * Auto Use Firefly Jar: uses the jar the moment its cooldown is over (the same 16 s
 --    as Firefly Clutch's timer; longer if the jar shows it needs longer), without the jar's
 --    animation, only while the fireflies are of use (a protection mode on and someone who
@@ -20915,16 +20908,17 @@ end)()
 --    and has your toys put back in order after each use.
 --  * The jar's lid, while it's out, moves round with the fireflies as one of them.
 --  * Use Fake Bomb As Particle Helper: your Fake Bomb taken out and thrown by itself
---    whenever none is out and it's ready (the way you throw it yourself), or the one you throw
---    yourself. It's never one of the fireflies (it never takes a firefly's place): it floats
---    over your head, tumbling over and over, whatever they're doing, carried along with you
---    every frame as they are (straight to you after a teleport), until a knife is thrown at
---    you (MMV: or the one with the gun fires at you); then it's put ahead of the fireflies,
---    still, its broad side to where that comes from: solid for the game and far bigger than a
---    firefly (on your screen never solid, so it can't push you). MMV's Fake Bomb In Middle Of
---    Fireflies: the whole time the Gun Shield is up it's in the middle of the shield instead,
---    the fireflies all round it (off, or no bomb out: the shield as always). Not used with Hidden Knife
---    Interception. As the MM2 murderer (protection paused) it's left alone, so Bomb Jump works
+--    whenever none is out and it's ready (the way you throw it yourself: pressed and let go in
+--    your hand, so the game hands it to you), or the one you throw yourself. It's never one of
+--    the fireflies (it never takes a firefly's place): it floats over your head, tumbling over
+--    and over, carried along with you every frame as they are (straight to you after a
+--    teleport). MM2: until a knife is thrown at you; then it's put ahead of the fireflies,
+--    still, its broad side to the knife. MMV: the whole time the Gun Shield is up (the
+--    sheriff/hero near or in sight) it's in the middle of the shield, still, its broad side to
+--    them, every firefly in a closed frame round it, none in front of it or behind it (no bomb
+--    out: the shield as always); a knife at you, just in front of the knife. Solid for the game
+--    and far bigger than a firefly (on your screen never solid, so it can't push you). Not used
+--    with Hidden Knife Interception. As the MM2 murderer (protection paused) it's left alone, so Bomb Jump works
 --    then, like Firefly Clutch. (Found when thrown by what it is: the toy's own Handle copied
 --    out into the map, the same size, with its sounds.) Fake Bomb Spin Speed (1 to 5 turns a
 --    second) is how fast it turns over your head.
@@ -20944,14 +20938,12 @@ pcall(function() status=section:AddParagraph("Status","Off",true) end)
 -- toggle starts off on a clean install; MMV's sliders start at ring 2 out at speed 2 and the
 -- Shield Distance at 2 (right against your body).
 local MMV_OWN={
-    -- (toggles and the player to protect: MMV's own key, and the shared one it was in before)
+    -- (toggles: MMV's own key, and the shared one it was in before)
     shield={"fireflyMMV_GunShield","fireflyProtectShield"},
     ring={"fireflyMMV_RingAura","fireflyProtectRing"},
     mouse={"fireflyMMV_FollowMouse","fireflyProtectMouse"},
     autoJar={"fireflyMMV_AutoJar","fireflyProtectAutoJar"},
-    protectOther={"fireflyMMV_ProtectOther","fireflyProtectOther"},
     fakeBomb={"fireflyMMV_FakeBomb","fireflyProtectFakeBomb"},
-    targetName={"fireflyMMV_ProtectOtherName","fireflyProtectOtherName"},
     -- (sliders: MMV's own key, the shared one, where that used to start, MMV's start)
     ringDistance={"fireflyMMVRingDistance","fireflyRingDistance",3,2},
     ringSpeed={"fireflyMMVRingSpeed","fireflyRingSpeed",3,2},
@@ -20989,17 +20981,13 @@ function MMV_OWN.shieldDistance()
     end
     return math.clamp(tonumber(C("fireflyMMV_ShieldDistance",gap and math.clamp(gap+2,1,SHIELD_MAX) or 2)) or 2,1,SHIELD_MAX)
 end
--- MM2's Interception Distance, in studs along a knife's path (7 to 25). 14 is where the old
--- 1-to-5 slider started (and as far as it went before that slider); a saved old setting
--- comes across as that many times 14 studs.
+-- MM2's Interception Distance (studs): how far out from you along a knife's path Knife
+-- Interception's furthest row goes, 3 to 25 studs, starting at 5 (close, the way Hidden Knife
+-- Interception keeps them). (Knives are seen from 60 studs whatever it is, further past 14.)
 local INTERCEPT_STUDS=14
+local INTERCEPT_MIN,INTERCEPT_MAX,INTERCEPT_START=3,25,5
 local function interceptStuds()
-    local studs=tonumber(C("fireflyInterceptStuds"))
-    if not studs then
-        local old=tonumber(C("fireflyInterceptReach"))
-        studs=tonumber(C("fireflyInterceptStuds",math.clamp(old and math.floor(old*INTERCEPT_STUDS+0.5) or INTERCEPT_STUDS,7,25)))
-    end
-    return math.clamp(studs or INTERCEPT_STUDS,7,25)
+    return math.clamp(tonumber(C("fireflyInterceptOut",INTERCEPT_START)) or INTERCEPT_START,INTERCEPT_MIN,INTERCEPT_MAX)
 end
 local settings={
     shield=MMV_OWN.toggle("shield"),
@@ -21010,15 +20998,8 @@ local settings={
     mouse=MMV_OWN.toggle("mouse"),
     autoJar=MMV_OWN.toggle("autoJar"),
     fakeBomb=MMV_OWN.toggle("fakeBomb"),
-    -- (MMV's Fake Bomb In Middle Of Fireflies: the Fake Bomb in the middle of the shield, the
-    -- fireflies all round it, whenever the Gun Shield is up; off on a clean install)
-    bombAhead=isMMV and C("fireflyMMV_FakeBombAhead",false)==true or false,
-    protectOther=MMV_OWN.toggle("protectOther"),
-    protectIntercept=not isMMV and C("fireflyProtectOtherIntercept",false)==true,
-    protectShield=not isMMV and C("fireflyProtectOtherShield",false)==true,
-    targetName="",
     distance=math.clamp(tonumber(C("fireflyProtectDistance",2.2)) or 2.2,1,4),
-    interceptStuds=isMMV and INTERCEPT_STUDS or interceptStuds(),
+    interceptStuds=isMMV and INTERCEPT_START or interceptStuds(),
     -- (Knife Block Distance: how far out from you knives are stopped, from where it was (1x) to
     -- twice as far, in case a knife can reach you from a little way off)
     blockScale=isMMV and 1 or math.clamp(tonumber(C("fireflyBlockScale",1)) or 1,1,2),
@@ -21030,11 +21011,6 @@ local settings={
     bombSpin=math.clamp(tonumber(C(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",1)) or 1,1,5),
 }
 settings.shieldGap=settings.shieldDistance-2
-do
-    local name=C(MMV_OWN.key("targetName"),nil)
-    if name==nil and isMMV then name=C("fireflyProtectOtherName",nil) end
-    settings.targetName=type(name)=="string" and name or ""
-end
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
 -- MMV's Gun Shield: the original's 5 x 5 square (shield v13), 0.52 apart, centred at your
@@ -21055,9 +21031,7 @@ local smoothDirection=nil
 local murdererNotice=-math.huge
 local diagnostics={fireflies=0,owned=0,threat="none",mode="idle",active=false,intercepts=0,jarUses=0,jarAttempts=0,skippedSlots=0,knivesDone=0}
 
--- (MMV: just the toggle, the Gun Shield's the only way)
-local function guarding() return settings.protectOther and (isMMV or settings.protectShield or settings.protectIntercept) end
-local function protecting() return settings.shield or settings.intercept or settings.sky or settings.ring or settings.mouse or guarding() end
+local function protecting() return settings.shield or settings.intercept or settings.sky or settings.ring or settings.mouse end
 -- (Use Fake Bomb As Particle Helper on its own keeps the status up, saying what it needs)
 local function active() return protecting() or settings.autoJar or settings.fakeBomb end
 local function owned(part)
@@ -21128,23 +21102,6 @@ local function attackers(root,except)
     end
     table.sort(found,function(a,b) return a.distance<b.distance end)
     return found
-end
--- Protect Other Player: the player picked, while they're alive and in the round with you.
--- The moment they die (or are out of this round, back in the lobby, or have left), it's
--- you that's protected again.
-local GUARD_RANGE=250
-local function guardTarget(me)
-    if not guarding() or settings.targetName=="" then return nil end
-    local plr=Players:FindFirstChild(settings.targetName)
-    if not plr or plr==LocalPlayer or not plr:IsA("Player") then return nil end
-    local root=aliveRoot(plr)
-    if not root then return nil end
-    -- (MM2's round data: killed this round, even once they're standing in the lobby again)
-    local entry=type(roundData)=="table" and roundData[plr.Name]
-    if type(entry)=="table" and (entry.Dead or entry.Killed) then return nil end
-    -- (somewhere else entirely, like the lobby while you're in the round)
-    if me and (root.Position-me.Position).Magnitude>GUARD_RANGE then return nil end
-    return plr,root
 end
 local function clutchBusy()
     local clutch=runtime.FireflyClutch
@@ -21217,14 +21174,71 @@ local pinned=setmetatable({}, {__mode="k"})
 -- whenever none is and the toy is ready, putting back what you held; or the one you throw),
 -- never solid on your screen, so it can't push you. It isn't one of the fireflies: it floats
 -- over your head, tumbling, carried along with you every frame as they are (straight to you
--- after a teleport), until a knife is thrown at you (MMV: or the one with the gun fires at you),
--- when it's put ahead of the fireflies, still, its broad side to where that comes from. MMV's
--- Fake Bomb In Middle Of Fireflies: the whole time the Gun Shield is up it's in the middle of the
--- shield, its broad side to them, the fireflies all round it (with no bomb out, the shield as
--- it always is). Not with MM2's Hidden Knife Interception. Bomb Jump Clutch is off while this is on (not
+-- after a teleport). MM2: until a knife is thrown at you, when it's put ahead of the fireflies,
+-- still, its broad side to the knife. MMV: the whole time the Gun Shield is up it's in the
+-- middle of the shield, its broad side to them, every firefly in a closed frame round it (with
+-- no bomb out, the shield as it always is); a knife at you, just in front of it. Not with MM2's
+-- Hidden Knife Interception. Bomb Jump Clutch is off while this is on (not
 -- as the MM2 murderer, when it's left alone, nor with Hidden Knife Interception); Bomb Fling
 -- comes first: while it flings, the bomb is its, and afterwards it's taken back if it's still out.
 local fakeBomb={part=nil,collide=nil,deploying=false,checkAt=0,readyAt=0}
+-- (the ways of throwing it: "tap", the toy pressed and let go in your hand, the way you throw
+-- it yourself (the game hands you a bomb you throw that way: yours to move); "screen", a tap
+-- on the screen where nothing on it is, with the toy in your hand, only when a tap brought
+-- nothing; "remote", its Remote told to put it just in front of you, Bomb Jump's way (a bomb
+-- thrown that way MM2 keeps to itself, and MMV until you walk to it). How each has turned
+-- out: a way that brought a bomb that's yours goes first from then on (remembered for next
+-- time, each game its own); one that brought nothing twice running, or a bomb the game kept,
+-- after the others; the Remote last unless it's the one that works. Never given up on.)
+local THROW_WAYS={"tap","screen","remote"}
+local throwWays={}
+-- (each way: how it last turned out, "yours", "kept" or "nothing", and when; how many times
+-- running it's brought nothing)
+for _,name in ipairs(THROW_WAYS) do throwWays[name]={last=nil,at=0,nothing=0} end
+local WAY_KEY=isMMV and "fireflyMMV_FakeBombWay" or "fireflyFakeBombWay"
+do
+    local saved=C(WAY_KEY,nil)
+    if type(saved)=="string" and throwWays[saved] then throwWays[saved].last="yours" end
+end
+local function throwOrder()
+    local order={}
+    for index,name in ipairs(THROW_WAYS) do order[#order+1]={name=name,index=index} end
+    local function rank(entry)
+        local way=throwWays[entry.name]
+        if way.last=="yours" then return 0 end
+        if entry.name=="remote" then return 3 end
+        if way.last=="kept" or way.nothing>=2 then return 2 end
+        return 1
+    end
+    table.sort(order,function(a,b)
+        local first,second=rank(a),rank(b)
+        if first~=second then return first<second end
+        -- (the one that last brought a bomb that's yours first)
+        if first==0 and throwWays[a.name].at~=throwWays[b.name].at then return throwWays[a.name].at>throwWays[b.name].at end
+        return a.index<b.index
+    end)
+    local names={}
+    for _,entry in ipairs(order) do names[#names+1]=entry.name end
+    return names
+end
+-- (a bomb thrown one of those ways, once it shows whether it's yours: yours for 1.5 s, or the
+-- game's for 0.6 s)
+local function bombTurnedOut(part,yours)
+    local thrown=fakeBomb.thrownWay
+    if not thrown or thrown.part~=part or thrown.settled then return end
+    thrown.settled=true
+    local way=throwWays[thrown.name]
+    if not way then return end
+    way.at=os.clock()
+    if yours then
+        way.last="yours";way.nothing=0
+        fakeBomb.keptWay=nil
+        pcall(SetCfg,WAY_KEY,thrown.name)
+    else
+        way.last="kept"
+        fakeBomb.keptWay=thrown.name
+    end
+end
 local function bombAlive(part)
     if not part or not part.Parent or not part:IsDescendantOf(workspace) then return false end
     local ok,y=pcall(function() return part.Position.Y end)
@@ -21759,34 +21773,6 @@ local function aimingToThrow(plr)
     end
     return false
 end
--- (MMV: the one with the gun firing: their gun's Shoot playing on them, or its Gunshot sound
--- just starting; counted for 2 s after the last shot seen)
-local SHOT_HOLD=2
-local lastShot=setmetatable({}, {__mode="k"})
-local function firing(plr)
-    local character=plr and plr.Character
-    if not character then return false end
-    local now=os.clock()
-    local fired=false
-    pcall(function()
-        local humanoid=character:FindFirstChildOfClass("Humanoid")
-        local animator=humanoid and humanoid:FindFirstChildOfClass("Animator")
-        for _,track in ipairs((animator or humanoid):GetPlayingAnimationTracks()) do
-            local name=tostring(track.Name):lower()
-            local id=track.Animation and tostring(track.Animation.AnimationId) or ""
-            if name=="shoot" or id:find("124281955370937",1,true) then fired=true;break end
-        end
-    end)
-    if not fired then
-        pcall(function()
-            local held=character:FindFirstChildOfClass("Tool")
-            local sound=held and held:FindFirstChild("Gunshot",true)
-            if sound and sound:IsA("Sound") and sound.IsPlaying and sound.TimePosition<0.5 then fired=true end
-        end)
-    end
-    if fired then lastShot[plr]=now end
-    return lastShot[plr]~=nil and now-lastShot[plr]<SHOT_HOLD
-end
 -- (where their knife would leave from: the knife in their hand, else about their shoulder)
 local function throwOrigin(threat)
     local character=threat.player.Character
@@ -21949,50 +21935,66 @@ local function squareCells(count)
     shieldCellsFor[count]=cells
     return cells
 end
--- (with the Fake Bomb in the middle of the shield: the fireflies in a frame right round its
--- broad side, just clear of its edges, no further apart than in the grid; more than one
--- frame holds, a second one round that, and so on. Each frame's middles of its sides first,
--- its corners last)
+-- (with the Fake Bomb in the middle of the shield: every firefly in a closed frame right round
+-- its broad side, just clear of its edges, in the same plane as it: one on each corner, the
+-- rest spread evenly along the sides (the long sides get more), as close together as there
+-- are fireflies for. As many as fit a frame that tightly (no two closer than FRAME_GAP), the
+-- rest in a second frame round that, and so on)
+local FRAME_MARGIN=0.16     -- from the bomb's edge to a firefly's middle
+local FRAME_GAP=0.22        -- the closest two fireflies in a frame come
+local function frameCells(count,halfWidth,halfHeight)
+    local cells={}
+    if count<4 then
+        local middles={Vector2.new(0,halfHeight),Vector2.new(0,-halfHeight),Vector2.new(halfWidth,0),Vector2.new(-halfWidth,0)}
+        for index=1,count do cells[index]=middles[index] end
+        return cells
+    end
+    local corners={Vector2.new(-halfWidth,halfHeight),Vector2.new(halfWidth,halfHeight),Vector2.new(halfWidth,-halfHeight),Vector2.new(-halfWidth,-halfHeight)}
+    for _,corner in ipairs(corners) do cells[#cells+1]=corner end
+    -- (the rest shared between the sides by how long they are: top, bottom, right, left; any
+    -- left over to the side with the most room per firefly, the top first)
+    local rest=count-4
+    local lengths={2*halfWidth,2*halfWidth,2*halfHeight,2*halfHeight}
+    local perimeter=4*(halfWidth+halfHeight)
+    local shares,given={},0
+    for index,length in ipairs(lengths) do shares[index]=math.floor(rest*length/perimeter);given=given+shares[index] end
+    while given<rest do
+        local best,bestRoom=1,-math.huge
+        for index,length in ipairs(lengths) do
+            local room=length/(shares[index]+1)
+            if room>bestRoom+1e-6 then best,bestRoom=index,room end
+        end
+        shares[best]=shares[best]+1;given=given+1
+    end
+    local function along(from,to,n)
+        for k=1,n do cells[#cells+1]=from:Lerp(to,k/(n+1)) end
+    end
+    along(corners[1],corners[2],shares[1])
+    along(corners[4],corners[3],shares[2])
+    along(corners[2],corners[3],shares[3])
+    along(corners[1],corners[4],shares[4])
+    return cells
+end
 local aroundCellsFor={}
 local function aroundCells(count,width,height)
     local key=count..":"..math.floor(width*100+0.5)..":"..math.floor(height*100+0.5)
     local cached=aroundCellsFor[key]
     if cached then return cached end
-    local spacing=SHIELD.spacing
     local cells={}
-    local frame=0
-    while #cells<count do
-        local halfWidth=width/2+0.18+frame*spacing
-        local halfHeight=height/2+0.18+frame*spacing
-        local across=math.max(1,math.ceil(2*halfWidth/spacing-0.001))
-        local down=math.max(1,math.ceil(2*halfHeight/spacing-0.001))
-        local ring={}
-        for step=0,across do
-            local x=-halfWidth+2*halfWidth*step/across
-            ring[#ring+1]=Vector2.new(x,halfHeight)
-            ring[#ring+1]=Vector2.new(x,-halfHeight)
-        end
-        for step=1,down-1 do
-            local y=-halfHeight+2*halfHeight*step/down
-            ring[#ring+1]=Vector2.new(halfWidth,y)
-            ring[#ring+1]=Vector2.new(-halfWidth,y)
-        end
-        table.sort(ring,function(a,b)
-            local near,far=math.floor(a.Magnitude*1000+0.5),math.floor(b.Magnitude*1000+0.5)
-            if near~=far then return near<far end
-            if a.Y~=b.Y then return a.Y>b.Y end
-            return a.X<b.X
-        end)
-        for _,cell in ipairs(ring) do
-            if #cells>=count then break end
-            cells[#cells+1]=cell
-        end
+    local frame,left=0,count
+    while left>0 do
+        local halfWidth=width/2+FRAME_MARGIN+frame*SHIELD.spacing
+        local halfHeight=height/2+FRAME_MARGIN+frame*SHIELD.spacing
+        local fits=math.max(4,math.floor(4*(halfWidth+halfHeight)/FRAME_GAP))
+        local here=math.min(left,fits)
+        for _,cell in ipairs(frameCells(here,halfWidth,halfHeight)) do cells[#cells+1]=cell end
+        left=left-here
         frame=frame+1
     end
     aroundCellsFor[key]=cells
     return cells
 end
-local function shieldSpots(count,root,facing,time,hole,lead)
+local function shieldSpots(count,root,facing,time,hole)
     local shieldCells=hole and aroundCells(count,hole.X,hole.Y) or squareCells(math.min(count,SHIELD.rows*SHIELD.columns))
     -- how far your body reaches toward them, measured in your own facing
     local size=root.Size
@@ -22017,11 +22019,11 @@ local function shieldSpots(count,root,facing,time,hole,lead)
     right=right.Magnitude>0.01 and right.Unit or Vector3.xAxis
     local up=right:Cross(facing).Unit
     local base=math.max(reach+settings.shieldGap,math.min(reach,torsoReach))+tilt
-    -- (round the Fake Bomb, `lead` ahead of them: as far out as keeps its back off you, tilted
-    -- or not, the fireflies round it going with it)
+    -- (round the Fake Bomb: as far out as keeps its back off you, tilted or not, the fireflies
+    -- round it going with it)
     if hole then
         local clear=math.max(reach,torsoReach)+hole.Z/2+math.abs(facing.Y)*hole.Y/2+0.05
-        base=math.max(base,clear-(lead or 0)*Vector3.new(facing.X,0,facing.Z).Magnitude)
+        base=math.max(base,clear)
     end
     local spots={}
     for index=1,count do
@@ -22070,6 +22072,8 @@ local function watchPointer()
             if processed or onTouchControls(position) then return end
             pointer.touches[input]={start=position,position=position,at=os.clock(),drag=false,held=false}
         elseif input.UserInputType==mouseType and not processed then
+            -- (not the add-on's own tap on the screen, throwing the Fake Bomb)
+            if os.clock()<(fakeBomb.tappingUntil or 0) then return end
             pointer.mouseDown=true;pointer.lastAt=os.clock()
         end
     end)
@@ -22265,15 +22269,6 @@ function own.mine(point)
     end
     return true
 end
--- (from `from`, the first spot along `direction`, `low` to `high` studs out, that's yours)
-function own.first(from,direction,low,high)
-    local distance=low
-    while distance<=high do
-        if own.mine(from+direction*distance) then return distance end
-        distance=distance+0.5
-    end
-    return nil
-end
 -- Hidden Knife Interception, while no knife is coming: the fireflies scattered high above you,
 -- 20 to 30 studs up and up to 12 studs out, each drifting slowly on its own (so nobody sees
 -- them round you); a knife on its way brings them all straight down in its way.
@@ -22298,13 +22293,13 @@ local function skySpots(count,time)
     end
     return spots
 end
--- Knife Interception's spots: rows along the knife's path, between it and the one protected,
--- from 2.2 studs out to a little short of where the knife was first seen, as far as the
--- Interception Distance says (in studs); each row a plus (on the path, either side of it,
--- above and below it), so a knife a little off its line still meets them. Hidden Knife
--- Interception's: the same rows at a fixed range round you instead (fixedAt: from the
--- Firefly Distance out to 2.6 studs further). (They're only there while a knife flies, too
--- short a time for the game to hand them to anyone else, so they go anywhere on its path.)
+-- Knife Interception's spots: rows along the knife's path, between it and you, spread evenly
+-- from 2.2 studs out (Knife Block Distance) to the Interception Distance (studs), never past
+-- the knife itself; each row a plus (on the path, either side of it, above and below it), so a
+-- knife a little off its line still meets them. Hidden Knife Interception's: the same rows at
+-- a fixed range round you instead (fixedAt: from the Firefly Distance out to 2.6 studs
+-- further). (They're only there while a knife flies, too short a time for the game to hand
+-- them to anyone else, so they go anywhere on its path.)
 local CROSS={Vector2.new(0,0),Vector2.new(0.45,0),Vector2.new(-0.45,0),Vector2.new(0,0.45),Vector2.new(0,-0.45)}
 local function interceptPoints(threat,count,studs,fixedAt)
     local direction=threat.direction
@@ -22318,13 +22313,15 @@ local function interceptPoints(threat,count,studs,fixedAt)
     if fixedAt then
         length=math.clamp(threat.along-from,0.5,2.6)
     else
-        length=math.clamp(threat.along-from,1,studs)
+        local far=math.max(math.min(studs,threat.along-0.3),0.5)
+        from=math.min(from,far)
+        length=far-from
         -- (kept while the knife keeps its course, so the rows hold still as it comes)
         if record then
-            if not record.length or record.lengthStuds~=studs or record.lengthRoot~=threat.root then
-                record.length=length;record.lengthStuds=studs;record.lengthRoot=threat.root
+            if not record.length or record.lengthStuds~=studs or record.lengthRoot~=threat.root or record.lengthScale~=settings.blockScale then
+                record.length=length;record.lengthFrom=from;record.lengthStuds=studs;record.lengthRoot=threat.root;record.lengthScale=settings.blockScale
             end
-            length=math.max(record.length,1)
+            length,from=record.length,record.lengthFrom
         end
     end
     local perRow=math.min(#CROSS,math.max(count,1))
@@ -22333,7 +22330,9 @@ local function interceptPoints(threat,count,studs,fixedAt)
     for n=1,count do
         local row=math.floor((n-1)/perRow)
         local lane=CROSS[(n-1)%perRow+1]
-        points[#points+1]=threat.closest-direction*(from+row*(length/rows))+side*lane.X+up*lane.Y
+        -- (Hidden's as they always were; Knife Interception's from the nearest row to the furthest)
+        local out=fixedAt and from+row*(length/rows) or from+(rows>1 and row*length/(rows-1) or 0)
+        points[#points+1]=threat.closest-direction*out+side*lane.X+up*lane.Y
     end
     return points
 end
@@ -22389,18 +22388,15 @@ local BOMB_SPIN=Vector3.new(5.2,2.3,3.9)
 local BOMB_SNAP=40
 -- (where it goes: 3 studs over your head; protecting, ahead of the fireflies: 1.5 studs past
 -- where Knife Shield's stop the knife, 0.8 past Knife Interception's furthest row, just in front
--- of MMV's knife, 1.15 out from MMV's shield, clear of both its layers; in the middle of MMV's
--- shield a little ahead of it)
+-- of MMV's knife; in the middle of MMV's shield, in the same plane as its fireflies)
 local BOMB_HEAD=3
 local BOMB_AHEAD=1.5
 local BOMB_ROWS=0.8
 local BOMB_LEAD=1.2
-local BOMB_GRID=1.15
-local BOMB_MIDDLE=0.25
 -- (MM2's Hidden Knife Interception doesn't use the Fake Bomb)
 local function bombAllowed() return isMMV or not settings.sky end
--- Protecting, the Fake Bomb isn't one of the formation but goes ahead of it, put there like a
--- firefly (carried along with the one protected), never turning: its broad side (the face
+-- Protecting, the Fake Bomb isn't one of the formation but goes ahead of it (MMV's shield: in
+-- its middle), put there like a firefly (carried along with you), never turning: its broad side (the face
 -- across its two longest sides) toward the one it shields from.
 local function broadside(part,facing)
     local size=part.Size
@@ -22448,19 +22444,7 @@ local function spinBomb(part,target,anchor,dt,turnSpeed)
     local axis=Vector3.new(BOMB_SPIN.X*math.cos(clock*2.4),BOMB_SPIN.Y+2.6*math.sin(clock*1.7),BOMB_SPIN.Z*math.sin(clock*2.4+1))
     part.AssemblyAngularVelocity=(axis.Magnitude>0.1 and axis.Unit or BOMB_SPIN.Unit)*(turnSpeed or BOMB_SPIN.Magnitude)
 end
--- Protecting someone else: the game hands a loose part to whoever is nearest it, so fireflies
--- over by them can become theirs to move. While they're there, your client asks the game to
--- keep simulating everything that far round you (the way part-control scripts do; some games
--- still go by it, and nothing changes where it doesn't).
 local setHidden=sethiddenproperty or env.sethiddenproperty
-local function keepOwnership(me,them)
-    if type(setHidden)~="function" then return end
-    local radius=math.clamp((them.Position-me.Position).Magnitude+30,60,400)
-    -- (the Fake Bomb's reach, when that's bigger)
-    if settings.fakeBomb then radius=math.max(radius,1000) end
-    diagnostics.keepRadius=radius
-    pcall(setHidden,LocalPlayer,"SimulationRadius",radius)
-end
 -- protection lets go of every firefly (paused, or Firefly Clutch using them): nothing is
 -- held in place any more and the jar's own movers are back
 local holding=false
@@ -22499,19 +22483,7 @@ local function step(dt)
         return
     end
     if clutchBusy() then diagnostics.threat="Firefly Clutch is using them";diagnostics.mode="clutch";letGo();return end
-    -- Whose body is protected this frame: yours with your own modes, unless Protect Select
-    -- User is on: then the player picked, the way picked for them, whenever anyone who could
-    -- hurt them is within 200 studs of them (or a knife is on its way to them), even with the
-    -- murderer by you; you only while nobody at all is after them, and with nothing going on
-    -- the fireflies wait round them. (With none of your own modes on you're kept safe the way
-    -- picked for them then, and once they're dead or gone.)
-    local guardPlayer,guardRoot=guardTarget(me)
     local selfMode={shield=settings.shield,intercept=not isMMV and settings.intercept,sky=not isMMV and settings.sky}
-    if guarding() and not (selfMode.shield or selfMode.intercept or selfMode.sky) then
-        selfMode={shield=isMMV or settings.protectShield,intercept=not isMMV and settings.protectIntercept}
-    end
-    local guardMode=guardRoot and {shield=isMMV or settings.protectShield,intercept=not isMMV and settings.protectIntercept} or nil
-    diagnostics.guarding=guardPlayer and guardPlayer.Name or nil
     own.refresh(me)
     refreshFilter()
     local ownedCount=0
@@ -22532,12 +22504,12 @@ local function step(dt)
         for part in pairs(caps) do if not onItsOwn(part) then forgetCap(part) end end
     end
     -- only attackers within 200 studs count (in the lobby, or dead and far from them, the
-    -- fireflies just circle the one protected); who's in sight or near: MM2's modes only need
-    -- the fireflies then, behind a wall and further away they're free for Follow Mouse
-    local function nearOf(body,except)
+    -- fireflies just circle you); who's in sight or near: MM2's modes only need the fireflies
+    -- then, behind a wall and further away they're free for Follow Mouse
+    local function nearOf(body)
         local found={}
         local from=body.Position+LIFT
-        for _,threat in ipairs(attackers(body,except)) do
+        for _,threat in ipairs(attackers(body)) do
             if threat.distance<=RANGE then
                 threat.seen=clear(from,threat.root.Position+Vector3.new(0,1,0))
                 found[#found+1]=threat
@@ -22549,38 +22521,10 @@ local function step(dt)
         if not (way.shield or way.intercept or way.sky) or not (isMMV or #threats>0) then return {} end
         return knifeThreats(body,way.intercept and settings.interceptStuds/INTERCEPT_STUDS or 1)
     end
-    -- (someone after that body right now: MM2 in sight or near, for Knife Shield or Knife
-    -- Interception; MMV the gun holder in sight or within 80 studs, for the Gun Shield)
-    local function pressing(way,threats)
-        if isMMV then
-            local gunHolder=threats[1]
-            return way.shield and gunHolder~=nil and (gunHolder.seen or gunHolder.distance<MMV_FAR) or false
-        end
-        if not (way.shield or way.intercept) then return false end
-        for _,threat in ipairs(threats) do if threat.seen or threat.distance<=NEAR then return true end end
-        return false
-    end
-    local myNear=nearOf(me)
-    local myKnives=knivesAt(me,selfMode,myNear)
-    local guardNear,guardKnives={},{}
-    if guardRoot then
-        guardNear=nearOf(guardRoot,guardPlayer)
-        guardKnives=knivesAt(guardRoot,guardMode,guardNear)
-    end
-    -- (Protect Select User on: they're the priority; you only while nobody is after them)
-    local forGuard=false
-    if guardRoot then
-        if #guardKnives>0 or #guardNear>0 then forGuard=true
-        elseif #myKnives>0 or pressing(selfMode,myNear) then forGuard=false
-        else forGuard=true end
-    end
-    local root,mode,near,knivesComing
-    if forGuard then root,mode,near,knivesComing=guardRoot,guardMode,guardNear,guardKnives
-    else root,mode,near,knivesComing=me,selfMode,myNear,myKnives;guardRoot=nil end
-    diagnostics.protecting=forGuard and guardPlayer.Name or "you"
-    -- (over by them: your client asks the game to keep simulating the fireflies)
-    if forGuard then keepOwnership(me,root) end
-    local mineKnife=not isMMV and not guardRoot and iHaveKnife()
+    local near=nearOf(me)
+    local root,mode=me,selfMode
+    local knivesComing=knivesAt(me,selfMode,near)
+    local mineKnife=not isMMV and iHaveKnife()
 
     local center=root.Position+LIFT
     local targets={}
@@ -22595,10 +22539,14 @@ local function step(dt)
     if bomb and (not bombAlive(bomb) or bombFlinging() or not settings.fakeBomb) then releaseBomb();bomb=nil end
     -- (the game has taken it back: it only moves on your screen now, so it's left alone)
     if bomb then
-        if owned(bomb) then fakeBomb.notOursSince=nil
+        local thrown=fakeBomb.thrownWay
+        if owned(bomb) then
+            fakeBomb.notOursSince=nil
+            if thrown and thrown.part==bomb and os.clock()-thrown.at>1.5 then bombTurnedOut(bomb,true) end
         else
             fakeBomb.notOursSince=fakeBomb.notOursSince or os.clock()
             if os.clock()-fakeBomb.notOursSince>0.6 then
+                bombTurnedOut(bomb,false)
                 fakeBomb.keptByGame=bomb;fakeBomb.notOursSince=nil
                 releaseBomb();bomb=nil
             end
@@ -22656,13 +22604,13 @@ local function step(dt)
                 bombAt,bombFacing,bombSnap=impact-threat.direction*BOMB_AHEAD,-threat.direction,true
                 kind="blocking a knife"
             else
-                -- Knife Interception: along its path, between it and the one protected, out as
-                -- far as the Interception Distance says (7 to 25 studs). They stay put while it
-                -- comes, so it flies into them. (Hidden Knife Interception: every one of them, at
-                -- a fixed range round you: the Firefly Distance out to 2.6 studs further)
-                local studs=mode.intercept and settings.interceptStuds or INTERCEPT_STUDS
+                -- Knife Interception: every one of them along its path, between it and you, out
+                -- as far as the Interception Distance (studs) says (3 to 25). They stay put while
+                -- it comes, so it flies into them. (Hidden Knife Interception: every one of them,
+                -- at a fixed range round you: the Firefly Distance out to 2.6 studs further)
+                local studs=mode.intercept and settings.interceptStuds or INTERCEPT_START
                 local fixedAt=mode.sky and settings.distance*settings.blockScale or nil
-                local count=fixedAt and #free or math.min(#free,math.ceil(7*studs/INTERCEPT_STUDS)*#CROSS)
+                local count=#free
                 local rows=interceptPoints(threat,count,studs,fixedAt)
                 for _,point in ipairs(rows) do take(point) end
                 -- (the Fake Bomb past the furthest row, on its line, still in front of the knife)
@@ -22739,10 +22687,9 @@ local function step(dt)
         defending=defending or ((mode.shield or mode.intercept) and #close>0)
     end
     diagnostics.defending=defending
-    diagnostics.guardHint=nil
     -- (Follow Mouse comes after the protection modes: while one is on and someone who could
-    -- hurt the one protected is within 200 studs, the fireflies stay on guard, so you know
-    -- you're protected; it's only for when there's nobody to protect you from)
+    -- hurt you is within 200 studs, the fireflies stay on guard, so you know you're
+    -- protected; it's only for when there's nobody to protect you from)
     local guarded=(mode.shield or mode.intercept or mode.sky) and #near>0
     local pointAt=nil
     if defending or guarded then cancelPointer()
@@ -22784,8 +22731,10 @@ local function step(dt)
                     local facing=(horizontal*math.cos(pitch)+Vector3.new(0,math.sin(pitch),0)).Unit
                     smoothDirection=smoothDirection and smoothDirection:Lerp(facing,math.clamp(FOLLOW*dt,0,1)) or facing
                     if smoothDirection.Magnitude<0.01 then smoothDirection=facing end
-                    -- (Fake Bomb In Middle Of Fireflies: the bomb in the middle, the fireflies round it)
-                    local middleBomb=bomb and settings.bombAhead and not guardRoot and not bombAt
+                    -- (the Fake Bomb, while it's out, in the middle of the shield the whole time
+                    -- it's up, its broad side to them, every firefly in a frame round it in the
+                    -- same plane: none in front of it or behind it)
+                    local middleBomb=bomb and not bombAt
                     local hole=nil
                     if middleBomb then
                         local size=bomb.Size
@@ -22795,38 +22744,14 @@ local function step(dt)
                         hole=Vector3.new(sides[3],sides[2],sides[1])
                     end
                     local middle
-                    spots,middle=shieldSpots(count,root,smoothDirection.Unit,clock,hole,BOMB_MIDDLE)
+                    spots,middle=shieldSpots(count,root,smoothDirection.Unit,clock,hole)
                     if middleBomb then
-                        bombAt,bombFacing=center+middle+smoothDirection.Unit*BOMB_MIDDLE,smoothDirection.Unit
+                        bombAt,bombFacing=center+middle,smoothDirection.Unit
                         diagnostics.bombMiddle=true
-                    end
-                    -- (in front of someone else: out toward the one with the gun to where you're
-                    -- nearer it than they are, so it stays yours)
-                    if guardRoot and #spots>0 then
-                        local middle=Vector3.zero
-                        for _,offset in ipairs(spots) do middle=middle+offset end
-                        middle=middle/#spots
-                        local facingOut=smoothDirection.Unit
-                        if not own.mine(center+middle) then
-                            local at=math.max(middle:Dot(facingOut),0)
-                            local out=own.first(center,facingOut,at,math.max(at,(aim-center).Magnitude-1.5))
-                            if out then
-                                local shift=facingOut*(out-at)
-                                for index,offset in ipairs(spots) do spots[index]=offset+shift end
-                            end
-                        end
                     end
                     grid=true
                     active=true
                     kind=kind or ("shielding from "..gunHolder.player.Name)
-                    -- (the Fake Bomb ahead of the shield, clear of every firefly in it, its broad side
-                    -- to them, once they fire at you)
-                    if bomb and not bombAt and not guardRoot and #spots>0 and firing(gunHolder.player) then
-                        local middle=Vector3.zero
-                        for _,offset in ipairs(spots) do middle=middle+offset end
-                        middle=middle/#spots
-                        bombAt,bombFacing=center+middle+smoothDirection.Unit*BOMB_GRID,smoothDirection.Unit
-                    end
                 elseif pointAt then
                     -- (hidden and far: not needed, so Follow Mouse while you point)
                     spots=idle(settings.ringDistance,settings.ringSpeed*0.6,"ring aura")
@@ -22871,17 +22796,12 @@ local function step(dt)
                     spots={}
                     local away=direction.Magnitude
                     -- (where the wall stays yours: in front of you, pulled in when they're near
-                    -- enough to take it; in front of someone else, out toward the murderer to
-                    -- where you're nearer it than they are)
+                    -- enough to take it)
                     local wallAt=settings.distance*settings.blockScale
                     local out=smoothDirection.Unit
                     if not own.mine(center+out*wallAt) then
-                        if guardRoot then
-                            wallAt=own.first(center,out,wallAt,math.max(wallAt,away-1.5)) or wallAt
-                        else
-                            while wallAt>0.8 and not own.mine(center+out*wallAt) do wallAt=wallAt-0.2 end
-                            wallAt=math.max(wallAt,0.8)
-                        end
+                        while wallAt>0.8 and not own.mine(center+out*wallAt) do wallAt=wallAt-0.2 end
+                        wallAt=math.max(wallAt,0.8)
                     end
                     -- (sized to what of you they can aim at from there: the closer they are,
                     -- the smaller and denser, so close up there are no gaps to throw through)
@@ -22900,9 +22820,9 @@ local function step(dt)
             -- murderer's hand, as Knife Interception puts them for a knife in the air)
             local virtual=readyFor(aimer)
             if virtual then
-                local studs=mode.intercept and settings.interceptStuds or INTERCEPT_STUDS
+                local studs=mode.intercept and settings.interceptStuds or INTERCEPT_START
                 local fixedAt=mode.sky and settings.distance*settings.blockScale or nil
-                local wanted=fixedAt and count or math.min(count,math.ceil(7*studs/INTERCEPT_STUDS)*#CROSS)
+                local wanted=count
                 spots={}
                 for _,point in ipairs(interceptPoints(virtual,wanted,studs,fixedAt)) do spots[#spots+1]=point-center end
                 ready=true
@@ -22920,16 +22840,14 @@ local function step(dt)
         end
     end
     kind=kind or "idle"
-    if guardPlayer then kind=kind..(forGuard and " (protecting "..guardPlayer.Name..")" or " (nobody's after "..guardPlayer.Name..": protecting you)") end
     if not grid then smoothDirection=nil end
     -- The Fake Bomb: over your head, turning as fast as Fake Bomb Spin Speed says, whatever the
     -- fireflies are doing, until a knife is thrown at you (MMV: or the one with the gun fires at
     -- you); then it's put ahead of the fireflies, its broad side to where that comes from, and
-    -- still, and once it's over it's back over your head. (Protecting someone else it stays over
-    -- your own head.)
+    -- still, and once it's over it's back over your head.
     diagnostics.bombMode=nil
     if bomb then
-        if bombAt and not guardRoot then
+        if bombAt then
             -- (kept where it stays yours: brought in toward you if it would be nearer someone else)
             if not own.mine(bombAt) then
                 local toward=bombAt-center
@@ -22952,9 +22870,8 @@ local function step(dt)
         local points={}
         for _,offset in ipairs(spots) do points[#points+1]=center+offset end
         -- (a spot nearer someone else than you would become theirs, and the firefly in it
-        -- would be lost to you: brought in toward you until it's yours. Not for someone else
-        -- you protect, whose spots were already put where they're yours, nor the mouse swarm)
-        if not guardRoot and not swarm then
+        -- would be lost to you: brought in toward you until it's yours. Not the mouse swarm)
+        if not swarm then
             for index,point in ipairs(points) do
                 if not own.mine(point) then
                     local toward=point-center
@@ -23084,12 +23001,6 @@ local function statusText()
     if not active() then return "Off" end
     local text=string.format("Fireflies: %d%s | %s",diagnostics.fireflies,diagnostics.fakeBomb and " + Fake Bomb" or "",
         diagnostics.active and "Active" or "Idle")
-    -- (protecting someone else: Roblox hands a part to whichever player it's nearest, so
-    -- fireflies at their body can become theirs to move; those only show on your screen)
-    local mineCount=tonumber(diagnostics.owned) or 0
-    if diagnostics.guarding and mineCount<diagnostics.fireflies then
-        text=text..string.format(" | %d only on your screen",diagnostics.fireflies-mineCount)
-    end
     -- (Use Fake Bomb As Particle Helper: why it isn't out)
     if settings.fakeBomb and not diagnostics.fakeBomb and diagnostics.fakeBombWhy then
         text=text.." | Fake Bomb: "..diagnostics.fakeBombWhy
@@ -23160,6 +23071,71 @@ local function fakeBombTool()
     end
 end
 local FIND_RADIUS=60
+-- (a spot on the screen with nothing on it that could take a tap: no button, text box or other
+-- active, visible piece of any menu over it; nil if there's none)
+local function blocksTap(object)
+    if not object.Visible then return false end
+    return object:IsA("GuiButton") or object:IsA("TextBox") or object.Active==true
+end
+local function freeScreenSpot()
+    local camera=workspace.CurrentCamera
+    if not camera then return nil end
+    local size=camera.ViewportSize
+    local inset=Vector2.zero
+    pcall(function() inset=game:GetService("GuiService"):GetGuiInset() end)
+    local containers={LocalPlayer:FindFirstChildOfClass("PlayerGui")}
+    pcall(function() containers[#containers+1]=game:GetService("CoreGui") end)
+    -- (the executor's own hidden menus, ODH's among them, checked by hand)
+    local hidden=nil
+    pcall(function() hidden=type(gethui)=="function" and gethui() or (type(env.gethui)=="function" and env.gethui()) or nil end)
+    for _,fraction in ipairs({Vector2.new(0.5,0.4),Vector2.new(0.5,0.28),Vector2.new(0.32,0.38),Vector2.new(0.68,0.38),Vector2.new(0.5,0.55)}) do
+        local x,y=size.X*fraction.X,size.Y*fraction.Y
+        local blocked=false
+        for _,container in ipairs(containers) do
+            for _,atY in ipairs({y,y-inset.Y}) do
+                local ok,objects=pcall(function() return container:GetGuiObjectsAtPosition(x,atY) end)
+                if ok and type(objects)=="table" then
+                    for _,object in ipairs(objects) do if blocksTap(object) then blocked=true;break end end
+                end
+                if blocked then break end
+            end
+            if blocked then break end
+        end
+        if not blocked and typeof(hidden)=="Instance" then
+            pcall(function()
+                for _,object in ipairs(hidden:GetDescendants()) do
+                    if object:IsA("GuiObject") and blocksTap(object) then
+                        local gui=object:FindFirstAncestorWhichIsA("LayerCollector")
+                        if not gui or gui.Enabled~=false then
+                            local at,extent=object.AbsolutePosition,object.AbsoluteSize
+                            for _,atY in ipairs({y,y-inset.Y}) do
+                                if x>=at.X and x<=at.X+extent.X and atY>=at.Y and atY<=at.Y+extent.Y then blocked=true end
+                            end
+                        end
+                    end
+                    if blocked then break end
+                end
+            end)
+        end
+        if not blocked then return x,y end
+    end
+    return nil
+end
+-- (a tap on the screen there, with the toy in your hand: what a finger does when you throw it)
+local function screenTap()
+    local ok,input=pcall(function() return game:GetService("VirtualInputManager") end)
+    if not ok or typeof(input)~="Instance" then return false end
+    local typing=nil
+    pcall(function() typing=UserInput:GetFocusedTextBox() end)
+    if typing then return false end
+    local x,y=freeScreenSpot()
+    if not x then return false end
+    fakeBomb.tappingUntil=os.clock()+0.6
+    local sent=pcall(function() input:SendMouseButtonEvent(x,y,0,true,game,0) end)
+    task.wait(0.06)
+    pcall(function() input:SendMouseButtonEvent(x,y,0,false,game,0) end)
+    return sent
+end
 local function throwFakeBomb()
     local root,character=myRoot()
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
@@ -23174,15 +23150,6 @@ local function throwFakeBomb()
     if not tool then return nil,"you don't have the Fake Bomb toy" end
     local remote=tool:FindFirstChild("Remote")
     if not (remote and remote:IsA("RemoteEvent")) then remote=tool:FindFirstChildWhichIsA("RemoteEvent",true) end
-    if not remote then
-        -- (a Fake Bomb without a Remote: Bomb Fling's way)
-        local fling=runtime.BombFling
-        if fling and type(fling.GetBomb)=="function" then
-            local ok,part=pcall(fling.GetBomb)
-            if ok and typeof(part)=="Instance" then return part end
-        end
-        return nil,"the Fake Bomb has no Remote"
-    end
     local backpack=LocalPlayer:FindFirstChildOfClass("Backpack")
     local held=nil
     for _,child in ipairs(character:GetChildren()) do
@@ -23205,21 +23172,52 @@ local function throwFakeBomb()
     end
     pcall(function() tool.Parent=character end)
     RunService.Heartbeat:Wait()
-    -- (its Remote told to put it just in front of you, Bomb Jump's way: it lands right by you, so
-    -- the game soon hands it to you, the nearest)
-    pcall(function() remote:FireServer(CFrame.new(position),50) end)
-    fakeBomb.readyAt=os.clock()+BOMB_COOLDOWN
-    -- (kept in hand as long as Bomb Jump keeps it, so the game still has it out as it throws)
-    local deadline=os.clock()+0.5
-    while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+    -- (a moment in your hand first, as when you take it out to throw it; MM2's toys say they're
+    -- not enabled while they're put away, so until the game has it enabled in your hand, half a
+    -- second at most)
+    task.wait(0.1)
+    local enabledBy=os.clock()+0.5
+    while tool.Enabled==false and os.clock()<enabledBy do task.wait(0.03) end
+    -- (the ways in turn, each given time to bring a bomb (a throw takes a moment), until one
+    -- does; the toy kept in your hand meanwhile, as the game wants it for a throw)
+    local thrownBy=nil
+    fakeBomb.attempts=(fakeBomb.attempts or 0)+1
+    for _,name in ipairs(throwOrder()) do
+        if lookNow() or tool.Parent~=character then break end
+        local tried=false
+        -- (a way that's brought nothing 4 times running only tried every 4th time, so the toy
+        -- isn't held up for it each time)
+        local way=throwWays[name]
+        if name~="remote" and way.nothing>=4 and fakeBomb.attempts%4~=0 then
+            -- (skipped this time)
+        elseif name=="tap" then
+            tried=true
+            pcall(function() tool:Activate() end)
+            task.wait(0.12)
+            pcall(function() tool:Deactivate() end)
+        elseif name=="screen" then
+            tried=screenTap()
+        elseif remote then
+            tried=true
+            pcall(function() remote:FireServer(CFrame.new(position),50) end)
+        end
+        if tried then
+            thrownBy=name
+            local deadline=os.clock()+(name=="remote" and 0.6 or 1.8)
+            while os.clock()<deadline and not lookNow() do task.wait(0.05) end
+            if lookNow() then break end
+            way.nothing=way.nothing+1;way.last="nothing";way.at=os.clock()
+        end
+    end
     if tool.Parent==character then pcall(function() tool.Parent=backpack or tool.Parent end) end
     if held and held.Parent and held.Parent~=character then pcall(function() humanoid:EquipTool(held) end) end
+    if not thrownBy then return nil,"no way of throwing it worked" end
     -- (your hands are free again: the jar can be used while the bomb is looked for; Auto Get
     -- Tools puts your toys back in their slots)
     fakeBomb.deploying=false;fakeBomb.searching=true
     local tools=runtime.AutoGetTools
     if tools and type(tools.RequestOrder)=="function" then pcall(tools.RequestOrder) end
-    deadline=os.clock()+3
+    local deadline=os.clock()+3
     while os.clock()<deadline and not lookNow() do task.wait(0.05) end
     if not fakeBomb.found then
         -- (looked for round you and round where it went)
@@ -23241,7 +23239,9 @@ local function throwFakeBomb()
         local seen=finder and finder.lastSeen
         return nil,"the thrown bomb wasn't found"..(seen and (" (near you: "..tostring(seen)..")") or "")
     end
-    return wholeBomb(found)
+    -- (the toy is ready again 22 s after a throw that brought a bomb)
+    fakeBomb.readyAt=os.clock()+BOMB_COOLDOWN
+    return wholeBomb(found),nil,thrownBy
 end
 -- a part that has just turned up in the map, while a bomb was just thrown (by the add-on, or
 -- by you with the Fake Bomb in your hand)
@@ -23280,12 +23280,12 @@ local function jarDueSoon()
     if not tool then return false end
     local readyAt=math.max(jar.usedAt+(jar.cooldown or JAR_COOLDOWN),jar.retryAt or -math.huge)
     local readyIn=readyAt-os.clock()
-    if readyIn>3 then jar.bombWaitSince=nil;return false end
+    if readyIn>5 then jar.bombWaitSince=nil;return false end
     -- (ready but not wanted right now: not in the way)
     if readyIn<=0 and diagnostics.jarIdle then return false end
-    -- (a jar that isn't used for a while all the same doesn't hold the bomb up past 6 s)
+    -- (a jar that isn't used for a while all the same doesn't hold the bomb up past 8 s)
     jar.bombWaitSince=jar.bombWaitSince or os.clock()
-    return os.clock()-jar.bombWaitSince<6
+    return os.clock()-jar.bombWaitSince<8
 end
 -- (whatever loose part is near enough, the game may hand you: asked for as far round you as
 -- it goes, the way part-control scripts do, so a Fake Bomb further off can become yours too)
@@ -23374,7 +23374,7 @@ local function bombStep()
     if jarDueSoon() then bombWhy("waiting for the jar");return end
     if now<(fakeBomb.readyAt or 0) then
         local left=math.ceil(fakeBomb.readyAt-now)
-        bombWhy(kept and ("the game took it back (only it moves it now): another in %ds"):format(left) or ("ready in %ds"):format(left))
+        bombWhy(kept and ("the game took it back (only it moves it now%s): another in %ds"):format(fakeBomb.keptWay and (", thrown by "..fakeBomb.keptWay) or "",left) or ("ready in %ds"):format(left))
         return
     end
     -- (Auto Get Tools fetching your toys or putting them in order: waited for, 12 s at most)
@@ -23393,11 +23393,13 @@ local function bombStep()
     fakeBomb.deploying=true
     bombWhy("throwing it out")
     task.spawn(function()
-        local ok,part,reason=pcall(throwFakeBomb)
+        local ok,part,reason,thrownBy=pcall(throwFakeBomb)
         fakeBomb.deploying=false;fakeBomb.searching=false
         fakeBomb.throwAt=nil
         if ok and typeof(part)=="Instance" and bombAlive(part) and settings.fakeBomb and runtimeAlive and not bombFlinging() then
             fakeBomb.failures=0
+            fakeBomb.thrownWay={part=part,name=thrownBy or "tap",at=os.clock(),settled=false}
+            diagnostics.bombThrownBy=thrownBy
             adoptBomb(part)
             bombWhy(nil)
         else
@@ -23498,13 +23500,6 @@ local function jarNeeded(root)
     for _,threat in ipairs(attackers(root)) do
         if threat.distance<=RANGE then return true end
     end
-    -- (and someone after the player you protect)
-    local guardPlayer,guardRoot=guardTarget(root)
-    if guardRoot then
-        for _,threat in ipairs(attackers(guardRoot,guardPlayer)) do
-            if threat.distance<=RANGE then return true end
-        end
-    end
     return false
 end
 -- the jar, used again the moment it's ready (not while you're the murderer in MM2, or
@@ -23563,11 +23558,9 @@ local function refresh()
 end
 local controls={}
 local KEYS={shield=MMV_OWN.key("shield"),intercept="fireflyProtectIntercept",sky="fireflyProtectHidden",fakeBomb=MMV_OWN.key("fakeBomb"),
-    bombAhead="fireflyMMV_FakeBombAhead",
-    ring=MMV_OWN.key("ring"),mouse=MMV_OWN.key("mouse"),autoJar=MMV_OWN.key("autoJar"),
-    protectOther=MMV_OWN.key("protectOther"),protectIntercept="fireflyProtectOtherIntercept",protectShield="fireflyProtectOtherShield"}
+    ring=MMV_OWN.key("ring"),mouse=MMV_OWN.key("mouse"),autoJar=MMV_OWN.key("autoJar")}
 -- (one of each group at a time: turning one on turns the one that was on off)
-local GROUPS=isMMV and {} or {{"shield","intercept","sky"},{"protectIntercept","protectShield"}}
+local GROUPS=isMMV and {} or {{"shield","intercept","sky"}}
 local function groupOf(field)
     for _,group in ipairs(GROUPS) do if table.find(group,field) then return group end end
 end
@@ -23623,7 +23616,6 @@ else
 end
 add("Auto Use Firefly Jar","autoJar")
 add("Use Fake Bomb As Particle Helper","fakeBomb")
-if isMMV then add("Fake Bomb In Middle Of Fireflies","bombAhead") end
 if isMMV then
     section:AddSlider("Ring Distance",1,8,settings.ringDistance,function(value)
         settings.ringDistance=math.clamp(tonumber(value) or MMV_OWN.default("ringDistance"),1,8);SetCfg(MMV_OWN.key("ringDistance"),settings.ringDistance)
@@ -23645,10 +23637,10 @@ else
     section:AddSlider("Firefly Distance",1.01,4,settings.distance,function(value)
         settings.distance=math.clamp(tonumber(value) or 2.2,1,4);SetCfg("fireflyProtectDistance",settings.distance)
     end)
-    -- (how far out along a knife's path Knife Interception and Protect With Knife Interception
-    -- go, in studs: 14 is as far as it went before)
-    section:AddSlider("Interception Distance",7,25,settings.interceptStuds,function(value)
-        settings.interceptStuds=math.clamp(tonumber(value) or INTERCEPT_STUDS,7,25);SetCfg("fireflyInterceptStuds",settings.interceptStuds)
+    -- (how far out from you along a knife's path Knife Interception's furthest row goes)
+    section:AddSlider("Interception Distance (studs)",INTERCEPT_MIN,INTERCEPT_MAX,settings.interceptStuds,function(value)
+        settings.interceptStuds=math.clamp(tonumber(value) or INTERCEPT_START,INTERCEPT_MIN,INTERCEPT_MAX)
+        SetCfg("fireflyInterceptOut",settings.interceptStuds)
     end)
     -- (where knives are stopped: 1 is where it was, up to twice as far out; in thousandths)
     section:AddSlider("Knife Block Distance",1.001,2,math.max(settings.blockScale,1.001),function(value)
@@ -23662,24 +23654,10 @@ section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
     settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
     SetCfg(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",settings.bombSpin)
 end)
--- Protect Select User: the player picked is the priority (you while nobody is after them)
-pcall(function() section:AddLabel("Protect Select User") end)
-add("Protect Select User","protectOther")
-pcall(function()
-    section:AddPlayerDropdown("User To Protect",function(plr)
-        if typeof(plr)~="Instance" or plr==LocalPlayer then return end
-        settings.targetName=plr.Name;SetCfg(MMV_OWN.key("targetName"),plr.Name)
-        pcall(shared.Notify,"Firefly Protection: protecting "..plr.Name,2)
-    end)
-end)
-if not isMMV then
-    add("Protect With Knife Interception","protectIntercept")
-    add("Protect With Knife Shield","protectShield")
-end
 runtime.FireflyProtection={
     Active=active,
     DisableAll=function()
-        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","bombAhead","protectOther","protectIntercept","protectShield"}) do
+        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb"}) do
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
@@ -23712,10 +23690,9 @@ runtime.RegisterReset(function()
     for _,controller in pairs(controls) do pcall(function() controller:Set(false) end) end
     settings.shield,settings.intercept,settings.autoJar,settings.ring,settings.mouse=false,false,false,false,false
     settings.sky=false
-    settings.fakeBomb=false;settings.bombAhead=false
+    settings.fakeBomb=false
     releaseBomb()
-    settings.protectOther,settings.protectIntercept,settings.protectShield=false,false,false
-    settings.distance,settings.interceptStuds,settings.blockScale=2.2,INTERCEPT_STUDS,1
+    settings.distance,settings.interceptStuds,settings.blockScale=2.2,INTERCEPT_START,1
     settings.bombSpin=1
     settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
     settings.shieldDistance,settings.shieldGap=2,0
