@@ -20085,7 +20085,8 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    power and spinning about the upright. (Reset Player's other trick, setting the bomb's
 --    physics replication root to theirs, stopped it flinging at all.)
 --  * moving players: the bomb rides along a little ahead of where you see them (see
---    LEAD_TRIES); standing ones have it right on them
+--    LEAD_TRIES), round their turn, through their weaving and up where hoppers are (see
+--    predictAhead, HOP_AIM); standing ones have it right on them
 --  * the Fake Bomb can only be thrown every 22 s (Bomb Jump's throws count too): while it can't,
 --    you're told how long is left instead of a throw that puts out nothing
 local runtime=env.VisualsV2Runtime
@@ -20567,18 +20568,147 @@ local function measure(track,position,now)
     local first=track[1]
     return now-first.at>=0.05 and (position-first.position)/(now-first.at) or Vector3.zero
 end
--- (how fast they're turning, in radians a second: the way they went over the first half of the
--- last quarter second against the way they went over the second half)
-local function turnRate(track)
-    local count=#track
-    if count<4 then return 0 end
-    local first,middle,last=track[1],track[math.floor(count/2)+1],track[count]
-    local older,newer=middle.position-first.position,last.position-middle.position
-    local span=(last.at-first.at)/2
-    if span<0.05 or Vector3.new(older.X,0,older.Z).Magnitude<0.5 or Vector3.new(newer.X,0,newer.Z).Magnitude<0.5 then return 0 end
-    local turn=math.atan2(newer.Z,newer.X)-math.atan2(older.Z,older.X)
-    turn=(turn+math.pi)%(2*math.pi)-math.pi
-    return math.clamp(turn/span,-4,4)
+-- Where a moving player will be, from their last second (PATH_TIME): round the arc if they're
+-- turning steadily one way, as round a circle; if they're weaving, halfway between straight on
+-- and the middle of where they've been heading; otherwise straight on. Tried in simulation on
+-- straight runs, circles, zig-zags and random turns, with the lead 0.12 s out either way and their
+-- position jittering 0.2 studs, they were touched 1.1 s in on average with 4% not touched in 4 s.
+-- Following every turn as if it went on (as the test before this did) took 3.3 s, with 62% not
+-- touched: a zig-zag's turn carried on for half a second throws the bomb 6 to 8 studs to one
+-- side, as the test target's log showed.
+local PATH_TIME=1
+local ARC_LIMIT=1.4
+-- Every other player's last MOTION_TIME seconds (where they were, which way they were going and
+-- how fast they were rising), kept all the time for the ones within 400 studs, so a fling knows
+-- from its start whether they're weaving, turning or hopping instead of finding out a second in.
+local MOTION_TIME=1.5
+local motion={}
+local tracker=RunService.Heartbeat:Connect(function()
+    if not alive or not runtimeAlive then return end
+    local now=os.clock()
+    local mine=rootOf(LocalPlayer)
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LocalPlayer then
+            local root=rootOf(plr)
+            local list=motion[plr]
+            if root and root.Parent and (not mine or (root.Position-mine.Position).Magnitude<400) then
+                if not list or list.root~=root then list={root=root};motion[plr]=list end
+                local position,velocity=root.Position,root.AssemblyLinearVelocity
+                -- (rising speed: the one the game sends, or from where they were a tenth of a
+                -- second ago when that reads 0)
+                local rise=velocity.Y
+                if math.abs(rise)<1 then
+                    for index=#list,1,-1 do
+                        local entry=list[index]
+                        if now-entry.at>=0.1 then rise=(position.Y-entry.position.Y)/(now-entry.at);break end
+                    end
+                end
+                list[#list+1]={at=now,position=position,velocity=Vector3.new(velocity.X,0,velocity.Z),rise=rise}
+                while #list>1 and now-list[1].at>MOTION_TIME do table.remove(list,1) end
+            elseif list then
+                motion[plr]=nil
+            end
+        end
+    end
+end)
+local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil end)
+-- Hopping: two take-offs or more (starting to rise faster than HOP_RISE) in the last 1.5 s. The
+-- test logs showed the bomb 3 to 6 studs under a hopping player whenever it was level with them:
+-- aimed where they'd land, as for one jump, while a hopper is mostly in the air. Kept round
+-- HOP_AIM over where their root is standing (about their standing head height), sweeping
+-- HOP_SWEEP either way, the bomb was level with them 75 to 82% of the time in simulation against
+-- 52 to 67% aimed where they'd land; someone who jumps now and then is still followed along their
+-- jump.
+local HOP_RISE=20
+local HOP_AIM=2.25
+local HOP_SWEEP=1
+local function hopping(history,now)
+    local count,below=0,false
+    for _,entry in ipairs(history) do
+        if now-entry.at<=1.5 then
+            if entry.rise>=HOP_RISE then
+                if below then count=count+1 end
+                below=false
+            else
+                below=true
+            end
+        end
+    end
+    return count>=2
+end
+local function headingOf(velocity) return math.atan2(velocity.Z,velocity.X) end
+local function wrapAngle(angle) return (angle+math.pi)%(2*math.pi)-math.pi end
+-- (how fast they turned between two entries, in radians a second, counting only while moving)
+local function turnBetween(path,from,to)
+    local net,first,last,previous=0,nil,nil,nil
+    for index=from,to do
+        local entry=path[index]
+        if entry.velocity.Magnitude>=2 then
+            if previous then net=net+wrapAngle(headingOf(entry.velocity)-headingOf(previous.velocity)) end
+            previous=entry
+            first=first or entry
+            last=entry
+        end
+    end
+    if not first or last.at-first.at<0.15 then return nil end
+    return net/(last.at-first.at)
+end
+-- (turning steadily one way, as round a circle: over the last 0.6 s, both halves turning the same
+-- way at much the same rate. The rate, or nil.)
+local function steadyTurn(path,now)
+    local start=nil
+    for index=#path,1,-1 do
+        if now-path[index].at<=0.6 then start=index else break end
+    end
+    if not start or #path-start<8 or now-path[start].at<0.48 then return nil end
+    local middle=math.floor((start+#path)/2)
+    local early,late=turnBetween(path,start,middle),turnBetween(path,middle,#path)
+    if not early or not late or early*late<=0 then return nil end
+    local small,big=math.min(math.abs(early),math.abs(late)),math.max(math.abs(early),math.abs(late))
+    if big<0.5 or small<0.4*big then return nil end
+    return (early+late)/2
+end
+-- (weaving: within the last second, a turn of 0.4 rad or more one way, then one the other way)
+local function weaving(path,now)
+    local turns,run,previous={},0,nil
+    for _,entry in ipairs(path) do
+        if now-entry.at<=PATH_TIME and entry.velocity.Magnitude>=2 then
+            if previous then
+                local change=wrapAngle(headingOf(entry.velocity)-headingOf(previous.velocity))
+                if math.abs(change)>1e-4 then
+                    if run==0 or (change>0)==(run>0) then
+                        run=run+change
+                    else
+                        if math.abs(run)>=0.4 then turns[#turns+1]=run end
+                        run=change
+                    end
+                end
+            end
+            previous=entry
+        end
+    end
+    if math.abs(run)>=0.4 then turns[#turns+1]=run end
+    for index=2,#turns do
+        if (turns[index]>0)~=(turns[index-1]>0) then return true end
+    end
+    return false
+end
+-- (the middle of where they've been over the last 0.8 s, carried on that long at the pace they've
+-- been making overall)
+local function middleAhead(path,now,current,lead)
+    local sumX,sumZ,count,first,last=0,0,0,nil,nil
+    for _,entry in ipairs(path) do
+        if now-entry.at<=0.8 then
+            sumX,sumZ,count=sumX+entry.position.X,sumZ+entry.position.Z,count+1
+            first=first or entry
+            last=entry
+        end
+    end
+    if count<3 or last.at-first.at<0.2 then return nil end
+    local span=last.at-first.at
+    local reach=lead+span/2
+    return Vector3.new(sumX/count+(last.position.X-first.position.X)/span*reach,current.Y,
+        sumZ/count+(last.position.Z-first.position.Z)/span*reach)
 end
 -- (how far someone going that fast and turning that fast gets in that long: round the arc)
 local function wayAhead(horizontal,turn,seconds)
@@ -20587,6 +20717,20 @@ local function wayAhead(horizontal,turn,seconds)
     local heading=math.atan2(horizontal.Z,horizontal.X)+angle/2
     local chord=2*horizontal.Magnitude/math.abs(turn)*math.sin(math.abs(angle)/2)
     return Vector3.new(math.cos(heading),0,math.sin(heading))*chord
+end
+-- (where they'll be that long on, and which way it was worked out)
+local function predictAhead(path,now,current,horizontal,lead)
+    local turn=steadyTurn(path,now)
+    if turn then
+        turn=math.clamp(turn,-ARC_LIMIT/lead,ARC_LIMIT/lead)
+        return current+wayAhead(horizontal,turn,lead),"turn",turn
+    end
+    local straight=current+horizontal*lead
+    if weaving(path,now) then
+        local middle=middleAhead(path,now,current,lead)
+        if middle then return (straight+middle)/2,"weave",0 end
+    end
+    return straight,"straight",0
 end
 -- (flung: going far faster than anyone runs, or well off the height they started at)
 local function flungNow(targetRoot,startY,measured)
@@ -20619,30 +20763,25 @@ end
 local PASS_TIME=0.5
 -- Moving players: Roblox sends physics only about 20 times a second and shows other players a
 -- good while behind where they are on their own screen, so the bomb rides along with a moving
--- player a little ahead of where you see them, to be on them where they really are. How far
--- ahead depends on both players' lag, which can't be read, so a fling tries a few distances in
--- turn (LEAD_TRIES, round the one that worked last), staying on each a while (the bomb takes
--- about a third of a second to reach their screen); the one it was on when it last flung
--- someone is kept for next time. In the test logs it had to be about 0.55 s ahead one time (put
--- 0.27 s and 0.37 s ahead, a walking player saw it 2.4 and 1.4 studs behind them) and about 0.35 s
--- the next (put 0.52 s ahead, they saw it 2.5 studs in front). A player walking in a curve is
--- followed round it (see turnRate), not along a straight line: going straight on, it sat 2 to 3.6
--- studs to one side of them for a second. (It can't be welded on: a weld you make exists only on
--- your screen, and welded to them the bomb would stop being yours to send. Attaching it like
--- Reset Player, sweeping it back and forth ahead of them and leaving it in their path all flung
--- less.)
+-- player a little ahead of where you see them, to be on them where they really are: your ping
+-- plus LEAD_BASE seconds ahead, give or take LEAD_TRIES, staying on each a while (the bomb takes
+-- about a third of a second to reach their screen). In four test sessions moving players were
+-- flung 28 times in 31 with the bomb 0.4-0.5 s ahead, but 9 in 15 at 0.25-0.35 s and 5 in 16 at
+-- 0.7-0.8 s. It used to learn how far from each fling, and that let it wander off to those, so
+-- it stays put now. Where a moving player will be is worked out three ways (see predictAhead).
+-- (It can't be welded on: a weld you make exists only on your screen, and welded to them the
+-- bomb would stop being yours to send. Attaching it like Reset Player, sweeping it back and
+-- forth ahead of them and leaving it in their path all flung less.)
+local LEAD_BASE=0.4
 local LEAD_TRIES={0,0.1,-0.1}
 local LEAD_DWELL=0.45
-local leadExtra=0.45
--- (a hit shows on your screen about this long after the bomb that did it was put there: it
--- takes a third of a second to reach them, and their fling about a quarter to come back)
-local HIT_SEEN_AFTER=0.55
 -- (a moving player gets at least this long, so every distance is tried)
 local MOVING_TIME=1.5
 local function pingSeconds()
     local ok,value=pcall(function() return LocalPlayer:GetNetworkPing() end)
     return ok and tonumber(value) or 0.1
 end
+local function baseLead() return math.clamp(pingSeconds(),0,0.4)+LEAD_BASE end
 -- (the floor under a spot, ignoring players and the bomb)
 local function floorBelow(position,ignore)
     local params=RaycastParams.new()
@@ -20751,9 +20890,9 @@ local function runFling(target)
     do
         local mine=rootOf(LocalPlayer)
         local velocity=targetRoot.AssemblyLinearVelocity
-        note(("START %s dist=%.0f speed=%.1f ping=%dms duration=%d leadExtra=%.2f"):format(label,
+        note(("START %s dist=%.0f speed=%.1f ping=%dms duration=%d lead=%.2f"):format(label,
             mine and (targetRoot.Position-mine.Position).Magnitude or -1,Vector3.new(velocity.X,0,velocity.Z).Magnitude,
-            math.floor(pingSeconds()*1000),settings.duration,leadExtra))
+            math.floor(pingSeconds()*1000),settings.duration,baseLead()))
     end
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
     -- put back on them: no limit while it flings, as Reset Player does)
@@ -20761,7 +20900,7 @@ local function runFling(target)
     pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
     local startY=targetRoot.Position.Y
-    local hit,hitAt=false,nil
+    local hit=false
     local rotation,thickness=flatRotation(bomb)
     local top,bottom=bodySpan(target.Character,targetRoot)
     local passStarted=os.clock()
@@ -20769,8 +20908,6 @@ local function runFling(target)
     -- (where they've been over the last moment: see measure)
     local track={}
     local limit=settings.duration
-    -- (the distances tried for a moving player, to tell which one reached them)
-    local tried={}
     local lastSample=-math.huge
     local ok,err=pcall(function()
         while os.clock()-started<limit and alive and runtimeAlive do
@@ -20790,8 +20927,8 @@ local function runFling(target)
             local current=targetRoot.Position
             local measured=measure(track,current,now)
             if flungNow(targetRoot,startY,measured) then
-                hit,hitAt=true,now
-                note(("HIT %s after %.2fs"):format(label,hitAt-started))
+                hit=true
+                note(("HIT %s after %.2fs"):format(label,now-started))
                 break
             end
             -- from just above the top of their head down to their feet, then again from the top
@@ -20811,16 +20948,24 @@ local function runFling(target)
             -- moving: a little ahead of where you see them, by the distance being tried
             local moving=horizontal.Magnitude>2
             if moving then limit=math.max(limit,MOVING_TIME) end
-            local extra=math.clamp(leadExtra+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1],0.2,1)
-            local lead=math.clamp(pingSeconds(),0,0.4)*2+extra
-            tried[#tried+1]={at=now,extra=extra,moving=moving}
-            local turn=moving and turnRate(track) or 0
-            local predicted=moving and current+wayAhead(horizontal,turn,lead) or current
+            local lead=baseLead()+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1]
+            local history=motion[target] or {}
+            local predicted,how,turn=current,"still",0
+            if moving then predicted,how,turn=predictAhead(history,now,current,horizontal,lead) end
+            local ignore={bomb}
+            if target.Character then ignore[#ignore+1]=target.Character end
+            if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+            -- hopping: round HOP_AIM over where they'd stand there, sweeping HOP_SWEEP either way
+            local hop=false
+            if hopping(history,now) then
+                local floorY=floorBelow(predicted,ignore)
+                if floorY then
+                    hop=true
+                    predicted=Vector3.new(predicted.X,floorY-bottom+HOP_AIM,predicted.Z)
+                end
+            end
             -- jumping or falling: along the arc, but never below the floor under them
-            if math.abs(verticalSpeed)>2 then
-                local ignore={bomb}
-                if target.Character then ignore[#ignore+1]=target.Character end
-                if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+            if not hop and math.abs(verticalSpeed)>2 then
                 local rise=verticalSpeed*lead-0.5*workspace.Gravity*lead*lead
                 local lowest=nil
                 local floorY=floorBelow(predicted,ignore)
@@ -20831,7 +20976,7 @@ local function runFling(target)
             -- (a small circle round them too, so a little off to one side still crosses the body)
             spin=spin+0.9
             local around=Vector3.new(math.cos(spin)*0.5,0,math.sin(spin)*0.5)
-            local height=(top+thickness/2)+((bottom+thickness/2)-(top+thickness/2))*progress
+            local height=hop and HOP_SWEEP*(1-2*progress) or (top+thickness/2)+((bottom+thickness/2)-(top+thickness/2))*progress
             local position=predicted+around+Vector3.new(0,height,0)
             -- (spun about the upright, so its big face stays down and the spin throws them sideways)
             pcall(function()
@@ -20852,9 +20997,9 @@ local function runFling(target)
                 local forward=horizontal.Magnitude>0.5 and horizontal.Unit or Vector3.new(look.X,0,look.Z)
                 forward=forward.Magnitude>0.01 and forward.Unit or Vector3.new(0,0,-1)
                 local offset=position-current
-                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f turn=%.1f moved=%.0f"):format(label,
+                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f %s%s turn=%.1f moved=%.0f"):format(label,
                     offset:Dot(forward),offset:Dot(Vector3.new(-forward.Z,0,forward.X)),offset.Y,horizontal.Magnitude,
-                    moving and lead or 0,turn,measured.Magnitude))
+                    moving and lead or 0,how,hop and "+hop" or "",turn,measured.Magnitude))
             end
         end
     end)
@@ -20884,18 +21029,7 @@ local function runFling(target)
         bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
     end) end
     if not ok then stats.lastError=tostring(err) end
-    if hit then
-        stats.hits=stats.hits+1
-        -- (the distance it was on when it reached them, as near as can be told: see
-        -- HIT_SEEN_AFTER; kept for next time)
-        local at=hitAt-HIT_SEEN_AFTER
-        for index=#tried,1,-1 do
-            if tried[index].at<=at then
-                if tried[index].moving then leadExtra=tried[index].extra end
-                break
-            end
-        end
-    end
+    if hit then stats.hits=stats.hits+1 end
     return hit
 end
 -- (carried along just under you between flings: see CARRY_DEPTH. Not while Firefly Protection
@@ -21176,9 +21310,9 @@ section:AddButton("Copy Fling Report",function()
     pcall(function() executor=tostring(identifyexecutor()) end)
     local text=table.concat({
         "VisualsV2 Bomb Fling report",
-        ("executor=%s ping=%dms duration=%d leadExtra=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,leadExtra,cooldownLeft()),
+        ("executor=%s ping=%dms duration=%d lead=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,baseLead(),cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; turn = how fast they're turning (radians/s); moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: halfway to the middle of their weaving; +hop: up where a hopper is) and the turn (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
@@ -21315,6 +21449,7 @@ runtime.RegisterReset(function()
     if not runtimeAlive then
         alive=false
         watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect();carry:Disconnect()
+        tracker:Disconnect();leaving:Disconnect();table.clear(motion)
         table.clear(recentParts)
     end
 end)
