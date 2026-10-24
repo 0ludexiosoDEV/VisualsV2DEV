@@ -20085,9 +20085,8 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    way slowly from just above their head down to their feet, over and over, sent down at full
 --    power and spinning about the upright. (Reset Player's other trick, setting the bomb's
 --    physics replication root to theirs, stopped it flinging at all.)
---  * moving and jumping players: the bomb glides back and forth along the path ahead of them
---    (see LEAD_NEAR), so on their own screen it sweeps across where they really are, kept above
---    the floor under them
+--  * moving players: the bomb waits, still, in their path for them to run into (see
+--    AMBUSH_MIN); standing ones have it right on them
 --  * the Fake Bomb can only be thrown every 22 s (Bomb Jump's throws count too): while it can't,
 --    you're told how long is left instead of a throw that puts out nothing
 local runtime=env.VisualsV2Runtime
@@ -20527,15 +20526,30 @@ end
 local PASS_TIME=0.5
 -- Moving players: Roblox sends physics only about 20 times a second and shows other players a
 -- good while behind where they are on their own screen, and the bomb reaches their screen just
--- as late, so a bomb kept on them as you see them lands behind them. It can't be welded on
--- either (a weld you make exists only on your screen, and welded to them the bomb would stop
--- being yours to send), and the replication-root attach stopped the fling outright. So the bomb
--- glides along the path ahead of them, from LEAD_NEAR to LEAD_FAR seconds of their walking (your
--- ping on top) and back, every GLIDE_TIME: slowly enough that each update sent is a different
--- spot, so on their screen it sweeps along the path they're walking instead of sitting at one
--- guess. Standing still they have no path, so it stays right on them.
-local LEAD_NEAR,LEAD_FAR=0.1,0.85
-local GLIDE_TIME=0.3
+-- as late, so a bomb kept on them as you see them lands behind them, and one swept back and
+-- forth ahead of them only flew all round them. It can't be welded on either (a weld you make
+-- exists only on your screen, and welded to them the bomb would stop being yours to send), and
+-- the replication-root attach stopped the fling outright. So for a moving player the bomb
+-- waits, still, in their path: put down where they'll be ambushLead seconds of their walking
+-- ahead (your ping on top), short of any wall, at their height off the floor there, for them to
+-- run into. Still, it's in the same place on every screen whatever the lag, and they reach it
+-- on yours just as they do on theirs. Run through it unflung (it went down too late for their
+-- screen) and the next one goes further ahead; flung, a little nearer next time. Standing
+-- still they have no path, so it stays right on them.
+local AMBUSH_MIN,AMBUSH_MAX=0.3,1.4
+local ambushLead=0.5
+-- (a moving player takes a while to reach it: flings at them last at least this long)
+local MOVING_TIME=2.5
+-- (whatever loose part is near enough, the game may hand you: asked for as far round you as it
+-- goes, as Firefly Protection does, so the bomb stays yours while it waits by them)
+local setHidden=sethiddenproperty or env.sethiddenproperty
+local reachAt=-math.huge
+local function askForReach()
+    if type(setHidden)~="function" or os.clock()-reachAt<2 then return end
+    reachAt=os.clock()
+    pcall(setHidden,LocalPlayer,"SimulationRadius",1000)
+    pcall(setHidden,LocalPlayer,"MaximumSimulationRadius",1000)
+end
 local function pingSeconds()
     local ok,value=pcall(function() return LocalPlayer:GetNetworkPing() end)
     return ok and tonumber(value) or 0.1
@@ -20548,6 +20562,19 @@ local function floorBelow(position,ignore)
     local ok,result=pcall(function() return workspace:Raycast(position+Vector3.new(0,2,0),Vector3.new(0,-60,0),params) end)
     return ok and result and result.Position.Y or nil
 end
+-- (where to wait for a moving player: that far along their way, short of any wall, at their
+-- height off the floor there)
+local function placeAmbush(from,direction,distance,bottom,ignore)
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances=ignore
+    local ok,result=pcall(function() return workspace:Raycast(from,direction*distance,params) end)
+    if ok and result then distance=math.max(0,(result.Position-from).Magnitude-1.5) end
+    local point=from+direction*distance
+    local floorY=floorBelow(point,ignore)
+    if floorY then point=Vector3.new(point.X,floorY-bottom,point.Z) end
+    return {point=point,at=os.clock(),closest=math.huge}
+end
 local function runFling(target)
     local targetRoot=rootOf(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
@@ -20559,6 +20586,7 @@ local function runFling(target)
     local mine=rootOf(LocalPlayer)
     if not mine then return false,"you are not alive" end
     -- only held under you when it isn't already yours, so a fling starts straight away
+    askForReach()
     if not owned(bomb) then claim(bomb,mine,0.6,0.05) end
     stats.flings=stats.flings+1
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
@@ -20576,8 +20604,10 @@ local function runFling(target)
     -- (where they've been over the last moment, for their speed in case the game doesn't send
     -- it for other players)
     local samples={}
+    local limit=settings.duration
+    local ambush,usedAmbush=nil,false
     local ok,err=pcall(function()
-        while os.clock()-started<settings.duration and alive and runtimeAlive do
+        while os.clock()-started<limit and alive and runtimeAlive do
             if not usable(bomb) then
                 -- it went off: put another one out straight away and carry on
                 bomb=nil
@@ -20593,6 +20623,7 @@ local function runFling(target)
             if not targetRoot.Parent or not aliveCharacter(target) then break end
             if flung(targetRoot,startY) then hit=true;break end
             -- no longer ours (the game gives a part to whoever is closest): back to you a moment
+            askForReach()
             if os.clock()-atTarget>0.3 and not owned(bomb) then
                 mine=rootOf(LocalPlayer)
                 if not mine then break end
@@ -20623,18 +20654,43 @@ local function runFling(target)
             if horizontal.Magnitude>80 then horizontal=horizontal.Unit*80 end
             local verticalSpeed=velocity.Y
             if math.abs(verticalSpeed)<1 and math.abs(measured.Y)>3 then verticalSpeed=measured.Y end
-            -- how far ahead: gliding from near to far and back
-            local glide=((now-started)/GLIDE_TIME)%2
-            if glide>1 then glide=2-glide end
-            local lead=math.clamp(pingSeconds(),0,0.4)+LEAD_NEAR+(LEAD_FAR-LEAD_NEAR)*glide
-            local predicted=current+horizontal*lead
-            -- jumping or falling: along the arc, but never below the floor under them
-            if math.abs(verticalSpeed)>2 then
+            local ping=math.clamp(pingSeconds(),0,0.4)
+            local speed=horizontal.Magnitude
+            local ignore={bomb}
+            if target.Character then ignore[#ignore+1]=target.Character end
+            if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+            -- moving: waiting in their path; standing (or nearly): right on them
+            if ambush and speed<2 then
+                ambush=nil
+            elseif speed>4 then
+                local direction=horizontal.Unit
+                if ambush then
+                    local offset=Vector3.new(ambush.point.X-current.X,0,ambush.point.Z-current.Z)
+                    local along=offset:Dot(direction)
+                    local side=(offset-direction*along).Magnitude
+                    if math.abs(along)<2 then ambush.closest=math.min(ambush.closest,side) end
+                    if along<-1.5 then
+                        -- (ran through it unflung: it went down too late for their screen)
+                        if ambush.closest<1.6 then ambushLead=math.min(AMBUSH_MAX,ambushLead+0.15) end
+                        ambush=nil
+                    elseif side>3 or now-ambush.at>ambush.wait then
+                        -- (turned off their way, or slowed and never came)
+                        ambush=nil
+                    end
+                end
+                if not ambush then
+                    ambush=placeAmbush(current,direction,speed*(ambushLead+ping),bottom,ignore)
+                    ambush.wait=(ambushLead+ping)*1.6+0.5
+                    usedAmbush=true
+                    limit=math.max(limit,MOVING_TIME)
+                end
+            end
+            local predicted=ambush and ambush.point or current
+            -- jumping or falling in place: along the arc a moment on, never below the floor
+            if not ambush and math.abs(verticalSpeed)>2 then
+                local lead=ping+0.2
                 local rise=verticalSpeed*lead-0.5*workspace.Gravity*lead*lead
                 local lowest=nil
-                local ignore={bomb}
-                if target.Character then ignore[#ignore+1]=target.Character end
-                if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
                 local floorY=floorBelow(predicted,ignore)
                 if floorY then lowest=floorY-bottom end
                 predicted=predicted+Vector3.new(0,rise,0)
@@ -20674,6 +20730,9 @@ local function runFling(target)
     end
     if not ok then stats.lastError=tostring(err) end
     if hit then stats.hits=stats.hits+1 end
+    -- (it worked waiting that far ahead: try a little nearer next time, so it's no further out
+    -- than it needs to be)
+    if hit and usedAmbush then ambushLead=math.max(AMBUSH_MIN,ambushLead-0.05) end
     return hit
 end
 -- Flings run one after another from a queue on their own thread, so pressing a button
