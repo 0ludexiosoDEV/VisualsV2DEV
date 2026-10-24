@@ -20081,21 +20081,22 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    everyone); then it goes to the target in short bursts, coming back to you whenever it
 --    stops being yours
 --  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
---    the physics step, touched against them, and (every other pass) its physics replication
---    root set to their HumanoidRootPart. It's laid flat, biggest face down, and works its way
---    from just above their head down to their feet, over and over, sent up at full power and
---    spinning (sent down, as Reset Player sends you, it only pushes them into the floor)
+--    the physics step, touched against them. It's laid flat, biggest face down, and works its
+--    way from just above their head down to their feet, over and over, sent up (or, with Fling
+--    Downwards, down) at the Fling Power and spinning about the upright. (Reset Player's other
+--    trick, setting the bomb's physics replication root to theirs, stopped it flinging at all.)
 local runtime=env.VisualsV2Runtime
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
-local POWER=50000
 local MAX_DURATION=4
+local MIN_POWER,MAX_POWER=50000,1000000
 local settings={
     duration=math.clamp(tonumber(C("bombFlingDuration",0.6)) or 0.6,0.1,MAX_DURATION),
     prediction=math.clamp(tonumber(C("bombFlingPrediction",0)) or 0,0,20),
     loopDelay=math.clamp(tonumber(C("bombFlingLoopDelay",1)) or 1,0,10),
     auraDistance=math.clamp(tonumber(C("bombFlingAuraStuds",15)) or 15,5,50),
-    attach=C("bombFlingAttach",true)~=false,
+    power=math.clamp(tonumber(C("bombFlingPower",250000)) or 250000,MIN_POWER,MAX_POWER),
+    downwards=C("bombFlingDownwards",false)==true,
 }
 local selectedPlayers,whitelist={},{}
 local loops={}
@@ -20468,25 +20469,9 @@ end
 local flingQueue={}
 local flinging=false
 local lastMissingNotice=-math.huge
--- Attached the way Reset Player (aux0on) attaches you to its target: the bomb's physics
--- replication root is set to their HumanoidRootPart, so everyone else is sent the bomb as part
--- of their assembly (right inside them, with no lag behind them), and it's touched against their
--- root and head every frame so the hit registers straight away
-local setHidden=sethiddenproperty or env.sethiddenproperty
-local instanceHandle=InstanceHandle or env.InstanceHandle
+-- (touched against their root and head every frame, as Reset Player (aux0on) does, so the hit
+-- registers straight away)
 local touchInterest=firetouchinterest or env.firetouchinterest
-local function setRootReference(part,target)
-    if type(setHidden)~="function" then return end
-    pcall(function()
-        if instanceHandle and type(instanceHandle.new)=="function" then setHidden(part,"PhysicsRepRootRef",instanceHandle.new(target)) end
-    end)
-    pcall(setHidden,part,"PhysicsRepRootPart",target)
-end
-local function clearRootReference(part)
-    if type(setHidden)~="function" or not part then return end
-    pcall(setHidden,part,"PhysicsRepRootRef",nil)
-    pcall(setHidden,part,"PhysicsRepRootPart",nil)
-end
 local function touch(a,b)
     if type(touchInterest)~="function" or not (a and b) then return end
     pcall(touchInterest,a,b,0)
@@ -20519,7 +20504,7 @@ local function bodySpan(character,targetRoot)
     end
     return top or 2.5,bottom or -3
 end
-local PASS_TIME=0.2
+local PASS_TIME=0.1
 local function runFling(target)
     local targetRoot=rootOf(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
@@ -20531,21 +20516,27 @@ local function runFling(target)
     local mine=rootOf(LocalPlayer)
     if not mine then return false,"you are not alive" end
     -- only held under you when it isn't already yours, so a fling starts straight away
-    clearRootReference(bomb)
     if not owned(bomb) then claim(bomb,mine,0.6,0.05) end
     stats.flings=stats.flings+1
+    local power=settings.power
+    local downwards=settings.downwards
+    -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
+    -- put back on them: no limit while it flings down, as Reset Player does)
+    local previousLimit=nil
+    if downwards then
+        pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
+    end
     local started=os.clock()
     local startY=targetRoot.Position.Y
     local atTarget=os.clock()
     local hit=false
     local rotation,thickness=flatRotation(bomb)
     local top,bottom=bodySpan(target.Character,targetRoot)
-    local pass,passStarted=0,os.clock()
+    local passStarted=os.clock()
     local ok,err=pcall(function()
         while os.clock()-started<settings.duration and alive and runtimeAlive do
             if not usable(bomb) then
                 -- it went off: put another one out straight away and carry on
-                clearRootReference(bomb)
                 bomb=nil
                 local fresh=deployBomb()
                 if not fresh then break end
@@ -20562,7 +20553,6 @@ local function runFling(target)
             if os.clock()-atTarget>0.3 and not owned(bomb) then
                 mine=rootOf(LocalPlayer)
                 if not mine then break end
-                clearRootReference(bomb)
                 claim(bomb,mine,0.25)
                 atTarget=os.clock()
             end
@@ -20572,7 +20562,7 @@ local function runFling(target)
             -- from just above the top of their head down to their feet, then again from the top
             local progress=(os.clock()-passStarted)/PASS_TIME
             if progress>=1 then
-                pass=pass+1;passStarted=os.clock();progress=0
+                passStarted=os.clock();progress=0
                 if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
             end
             local height=(top+thickness/2)+((bottom+thickness/2)-(top+thickness/2))*progress
@@ -20582,24 +20572,25 @@ local function runFling(target)
                 local horizontal=Vector3.new(velocity.X,0,velocity.Z)
                 if horizontal.Magnitude>0.2 then position=position+horizontal.Unit*settings.prediction end
             end
-            -- (sent up, not down: pushed down, they're only pushed into the floor; spun about the
-            -- upright, so its big face stays down)
+            -- (spun about the upright, so its big face stays down and the spin throws them sideways)
             pcall(function()
                 bomb.CFrame=CFrame.new(position)*rotation
-                bomb.AssemblyLinearVelocity=Vector3.new(0,POWER,0)
-                bomb.AssemblyAngularVelocity=Vector3.new(0,POWER,0)
+                bomb.AssemblyLinearVelocity=Vector3.new(0,downwards and -power or power,0)
+                bomb.AssemblyAngularVelocity=Vector3.new(0,power,0)
             end)
             local head=target.Character and target.Character:FindFirstChild("Head")
             for _=1,5 do
                 touch(bomb,targetRoot)
                 if head then touch(bomb,head) end
             end
-            -- (every other pass attached like Reset Player, in between a plain hit, so if the game
-            -- doesn't take the attached bomb the plain one still lands)
-            if settings.attach and pass%2==0 then setRootReference(bomb,targetRoot) else clearRootReference(bomb) end
         end
     end)
-    if bomb then clearRootReference(bomb) end
+    if previousLimit~=nil then
+        pcall(function()
+            local current=workspace.FallenPartsDestroyHeight
+            if current~=current then workspace.FallenPartsDestroyHeight=previousLimit end
+        end)
+    end
     -- park it back under you, still and ready for the next one
     if bomb and usable(bomb) then
         mine=rootOf(LocalPlayer)
@@ -20713,8 +20704,11 @@ end)
 section:AddSlider("Fling Duration",0.1,MAX_DURATION,settings.duration,function(value)
     settings.duration=math.clamp(tonumber(value) or 0.6,0.1,MAX_DURATION);SetCfg("bombFlingDuration",settings.duration)
 end)
-addToggle(section,"Attach Like Reset Player",settings.attach,function(value)
-    settings.attach=value==true;SetCfg("bombFlingAttach",settings.attach)
+section:AddSlider("Fling Power (thousands)",MIN_POWER/1000,MAX_POWER/1000,settings.power/1000,function(value)
+    settings.power=math.clamp((tonumber(value) or 250)*1000,MIN_POWER,MAX_POWER);SetCfg("bombFlingPower",settings.power)
+end)
+addToggle(section,"Fling Downwards",settings.downwards,function(value)
+    settings.downwards=value==true;SetCfg("bombFlingDownwards",settings.downwards)
 end)
 section:AddSlider("Prediction Studs",0,20,settings.prediction,function(value)
     settings.prediction=math.clamp(tonumber(value) or 0,0,20);SetCfg("bombFlingPrediction",settings.prediction)
