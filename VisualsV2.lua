@@ -20085,9 +20085,9 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    way slowly from just above their head down to their feet, over and over, sent down at full
 --    power and spinning about the upright. (Reset Player's other trick, setting the bomb's
 --    physics replication root to theirs, stopped it flinging at all.)
---  * moving and jumping players are led by your ping, each sweep a bit further or nearer ahead
---    of them than the last (so a wrong guess at their lag still crosses them), kept above the
---    floor under them
+--  * moving and jumping players: the bomb glides back and forth along the path ahead of them
+--    (see LEAD_NEAR), so on their own screen it sweeps across where they really are, kept above
+--    the floor under them
 --  * the Fake Bomb can only be thrown every 22 s (Bomb Jump's throws count too): while it can't,
 --    you're told how long is left instead of a throw that puts out nothing
 local runtime=env.VisualsV2Runtime
@@ -20525,8 +20525,17 @@ local function bodySpan(character,targetRoot)
     return top or 2.5,bottom or -3
 end
 local PASS_TIME=0.5
--- (each sweep is led a different amount ahead of a moving player: their real lag is a guess)
-local LEAD_STEPS={1,0.5,1.5}
+-- Moving players: Roblox sends physics only about 20 times a second and shows other players a
+-- good while behind where they are on their own screen, and the bomb reaches their screen just
+-- as late, so a bomb kept on them as you see them lands behind them. It can't be welded on
+-- either (a weld you make exists only on your screen, and welded to them the bomb would stop
+-- being yours to send), and the replication-root attach stopped the fling outright. So the bomb
+-- glides along the path ahead of them, from LEAD_NEAR to LEAD_FAR seconds of their walking (your
+-- ping on top) and back, every GLIDE_TIME: slowly enough that each update sent is a different
+-- spot, so on their screen it sweeps along the path they're walking instead of sitting at one
+-- guess. Standing still they have no path, so it stays right on them.
+local LEAD_NEAR,LEAD_FAR=0.1,0.85
+local GLIDE_TIME=0.3
 local function pingSeconds()
     local ok,value=pcall(function() return LocalPlayer:GetNetworkPing() end)
     return ok and tonumber(value) or 0.1
@@ -20562,11 +20571,11 @@ local function runFling(target)
     local hit=false
     local rotation,thickness=flatRotation(bomb)
     local top,bottom=bodySpan(target.Character,targetRoot)
-    local passStarted,pass=os.clock(),0
+    local passStarted=os.clock()
     local spin=math.random()*math.pi*2
-    -- (their speed, measured as well, in case the game doesn't send it for other players)
-    local lastPosition,lastAt=targetRoot.Position,os.clock()
-    local measured=Vector3.zero
+    -- (where they've been over the last moment, for their speed in case the game doesn't send
+    -- it for other players)
+    local samples={}
     local ok,err=pcall(function()
         while os.clock()-started<settings.duration and alive and runtimeAlive do
             if not usable(bomb) then
@@ -20596,24 +20605,28 @@ local function runFling(target)
             -- from just above the top of their head down to their feet, then again from the top
             local progress=(os.clock()-passStarted)/PASS_TIME
             if progress>=1 then
-                passStarted=os.clock();progress=0;pass=pass+1
+                passStarted=os.clock();progress=0
                 if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
             end
             local now=os.clock()
             local current=targetRoot.Position
-            if now-lastAt>0.001 then
-                measured=measured:Lerp((current-lastPosition)/(now-lastAt),0.5)
-                lastPosition,lastAt=current,now
-            end
+            samples[#samples+1]={at=now,position=current}
+            while #samples>2 and now-samples[2].at>=0.25 do table.remove(samples,1) end
+            local measured=Vector3.zero
+            if now-samples[1].at>=0.08 then measured=(current-samples[1].position)/(now-samples[1].at) end
+            -- (the speed the game sends for them, unless it says they're still while they move;
+            -- measured over a quarter second, not frame to frame, where it jumps about)
             local velocity=targetRoot.AssemblyLinearVelocity
             local horizontal=Vector3.new(velocity.X,0,velocity.Z)
             local measuredHorizontal=Vector3.new(measured.X,0,measured.Z)
-            if measuredHorizontal.Magnitude>horizontal.Magnitude+2 then horizontal=measuredHorizontal end
+            if horizontal.Magnitude<1 and measuredHorizontal.Magnitude>3 then horizontal=measuredHorizontal end
             if horizontal.Magnitude>80 then horizontal=horizontal.Unit*80 end
-            local verticalSpeed=math.abs(velocity.Y)>math.abs(measured.Y) and velocity.Y or measured.Y
-            -- where they are on their own screen by the time the bomb gets there: what you see is
-            -- their lag behind, and the bomb takes yours to reach them
-            local lead=math.clamp(pingSeconds()*2+0.05,0.08,0.6)*LEAD_STEPS[pass%#LEAD_STEPS+1]
+            local verticalSpeed=velocity.Y
+            if math.abs(verticalSpeed)<1 and math.abs(measured.Y)>3 then verticalSpeed=measured.Y end
+            -- how far ahead: gliding from near to far and back
+            local glide=((now-started)/GLIDE_TIME)%2
+            if glide>1 then glide=2-glide end
+            local lead=math.clamp(pingSeconds(),0,0.4)+LEAD_NEAR+(LEAD_FAR-LEAD_NEAR)*glide
             local predicted=current+horizontal*lead
             -- jumping or falling: along the arc, but never below the floor under them
             if math.abs(verticalSpeed)>2 then
@@ -20779,26 +20792,90 @@ local function autoFling(name,key,finder)
 end
 autoFling("Sheriff","bombFlingAutoSheriff",findSheriff)
 autoFling("Murderer","bombFlingAutoMurderer",findMurderer)
+-- Click Fling. (It aimed its ray with the tap's position as if measured from the very top of
+-- the screen, but taps are measured from below the top bar, so the ray went over the player's
+-- head; and it needed the ray to land exactly on them, a few pixels on a phone.)
 local clickConnections={}
+local function playerFromPart(part)
+    local current=part
+    while current and current~=workspace do
+        if current:IsA("Model") then
+            local plr=Players:GetPlayerFromCharacter(current)
+            if plr then return plr end
+        end
+        current=current.Parent
+    end
+end
+-- (a visible button or text box at that spot: the tap was for it)
+local function buttonAt(x,y)
+    local containers={LocalPlayer:FindFirstChildOfClass("PlayerGui")}
+    pcall(function() containers[#containers+1]=game:GetService("CoreGui") end)
+    for _,container in ipairs(containers) do
+        local ok,objects=pcall(function() return container:GetGuiObjectsAtPosition(x,y) end)
+        if ok and type(objects)=="table" then
+            for _,object in ipairs(objects) do
+                if object.Visible and (object:IsA("GuiButton") or object:IsA("TextBox")) then return true end
+            end
+        end
+    end
+    return false
+end
+-- The player at a spot on the screen: the one the tap lands on, or else the one drawn nearest
+-- to it, within about a finger's width. (viewportSpace: x, y are measured from the very top of
+-- the screen, as the mouse location is; otherwise from below the top bar, as taps are.)
+local function playerAt(x,y,viewportSpace)
+    local camera=workspace.CurrentCamera
+    if not camera then return nil end
+    local ray=viewportSpace and camera:ViewportPointToRay(x,y) or camera:ScreenPointToRay(x,y)
+    local ignore={}
+    if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+    if ownBomb then ignore[#ignore+1]=ownBomb end
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances=ignore
+    local ok,result=pcall(function() return workspace:Raycast(ray.Origin,ray.Direction*2000,params) end)
+    local hitPlayer=ok and result and playerFromPart(result.Instance)
+    if hitPlayer and hitPlayer~=LocalPlayer then return hitPlayer end
+    local tap=Vector2.new(x,y)
+    local best,bestDistance=nil,math.clamp(camera.ViewportSize.Y*0.08,40,100)
+    for _,plr in ipairs(others()) do
+        for _,name in ipairs({"HumanoidRootPart","Head","Torso","UpperTorso"}) do
+            local part=plr.Character and plr.Character:FindFirstChild(name)
+            if part and part:IsA("BasePart") then
+                local point,visible
+                if viewportSpace then point,visible=camera:WorldToViewportPoint(part.Position)
+                else point,visible=camera:WorldToScreenPoint(part.Position) end
+                local distance=(Vector2.new(point.X,point.Y)-tap).Magnitude
+                if visible and distance<bestDistance then best,bestDistance=plr,distance end
+            end
+        end
+    end
+    return best
+end
 toggle("Click Fling","bombFlingClick",function(value)
     for _,connection in ipairs(clickConnections) do connection:Disconnect() end
     table.clear(clickConnections)
     if not value then return end
-    local function pressed(input,processed)
-        if processed then return end
-        if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
-        local camera=workspace.CurrentCamera
-        if not camera then return end
-        local ray=camera:ViewportPointToRay(input.Position.X,input.Position.Y)
-        local params=RaycastParams.new()
-        params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={LocalPlayer.Character}
-        local result=workspace:Raycast(ray.Origin,ray.Direction*500,params)
-        local model=result and result.Instance and result.Instance:FindFirstAncestorOfClass("Model")
-        local plr=model and Players:GetPlayerFromCharacter(model)
-        if plr and plr~=LocalPlayer then fling(plr) end
+    local function chosen(plr)
+        if plr and plr~=LocalPlayer and not isWhitelisted(plr) then
+            notify("Bomb Fling: "..plr.Name,1)
+            fling(plr)
+        end
     end
-    clickConnections[1]=UserInputService.InputBegan:Connect(pressed)
+    -- mouse: a left click that wasn't on a button
+    clickConnections[#clickConnections+1]=UserInputService.InputBegan:Connect(function(input,processed)
+        if processed or input.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+        local location=UserInputService:GetMouseLocation()
+        chosen(playerAt(location.X,location.Y,true))
+    end)
+    -- touch: a tap (not a drag to turn the camera) that wasn't on a button. (The touch controls
+    -- can mark taps on the world as handled too, so that alone doesn't skip a tap.)
+    clickConnections[#clickConnections+1]=UserInputService.TouchTap:Connect(function(positions,processed)
+        local position=type(positions)=="table" and positions[1]
+        if not position then return end
+        if processed and buttonAt(position.X,position.Y) then return end
+        chosen(playerAt(position.X,position.Y,false))
+    end)
 end)
 toggle("Fling Aura","bombFlingAura",function(value)
     if not value then stopLoop("aura");return end
