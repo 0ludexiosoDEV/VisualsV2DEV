@@ -20575,9 +20575,13 @@ end
 -- position jittering 0.2 studs, they were touched 1.1 s in on average with 4% not touched in 4 s.
 -- Following every turn as if it went on (as the test before this did) took 3.3 s, with 62% not
 -- touched: a zig-zag's turn carried on for half a second throws the bomb 6 to 8 studs to one
--- side, as the test target's log showed.
+-- side, as the test target's log showed. Round the arc goes at most ARC_LIMIT radians: someone
+-- circling at 3 to 4 radians a second (as the test target did) turns further than the 1.4 it used
+-- to be in the time the bomb is ahead, and the bomb lagged behind them round the circle; at 2.2,
+-- simulation touched a 4 radians a second circle in about a second, and did no worse on straight
+-- runs, zig-zags or random turns.
 local PATH_TIME=1
-local ARC_LIMIT=1.4
+local ARC_LIMIT=2.2
 -- Every other player's last MOTION_TIME seconds (where they were, which way they were going and
 -- how fast they were rising), kept all the time for the ones within 400 studs, so a fling knows
 -- from its start whether they're weaving, turning or hopping instead of finding out a second in.
@@ -20618,10 +20622,13 @@ local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil end)
 -- HOP_AIM over where their root is standing (about their standing head height), sweeping
 -- HOP_SWEEP either way, the bomb was level with them 75 to 82% of the time in simulation against
 -- 52 to 67% aimed where they'd land; someone who jumps now and then is still followed along their
--- jump.
+-- jump. Where their root is standing is where it last was when they landed (the lowest it's been
+-- in the last HOP_LANDED seconds): taken from the floor found under them, it was once 5 to 6
+-- studs too low for a whole fling, the bomb lying on the floor under someone hopping in place.
 local HOP_RISE=20
 local HOP_AIM=2.25
 local HOP_SWEEP=1
+local HOP_LANDED=1
 local function hopping(history,now)
     local count,below=0,false
     for _,entry in ipairs(history) do
@@ -20635,6 +20642,14 @@ local function hopping(history,now)
         end
     end
     return count>=2
+end
+-- (the height their root was at when they last landed, or nil)
+local function landedHeight(history,now)
+    local lowest=nil
+    for _,entry in ipairs(history) do
+        if now-entry.at<=HOP_LANDED then lowest=math.min(lowest or math.huge,entry.position.Y) end
+    end
+    return lowest
 end
 local function headingOf(velocity) return math.atan2(velocity.Z,velocity.X) end
 local function wrapAngle(angle) return (angle+math.pi)%(2*math.pi)-math.pi end
@@ -20733,8 +20748,11 @@ local function predictAhead(path,now,current,horizontal,lead)
     return straight,"straight",0
 end
 -- (flung: going far faster than anyone runs, or well off the height they started at)
+local FLUNG_SPEED=140
+-- (further off than this, someone has been flung off the map, not walked there)
+local FAR_AWAY=1000
 local function flungNow(targetRoot,startY,measured)
-    return targetRoot.AssemblyLinearVelocity.Magnitude>140 or Vector3.new(measured.X,0,measured.Z).Magnitude>45
+    return targetRoot.AssemblyLinearVelocity.Magnitude>FLUNG_SPEED or Vector3.new(measured.X,0,measured.Z).Magnitude>45
         or measured.Magnitude>100 or math.abs(targetRoot.Position.Y-startY)>25
 end
 -- (the bomb laid flat, its biggest face down: its thinnest side turned to point up)
@@ -20765,14 +20783,16 @@ local PASS_TIME=0.5
 -- good while behind where they are on their own screen, so the bomb rides along with a moving
 -- player a little ahead of where you see them, to be on them where they really are: your ping
 -- plus LEAD_BASE seconds ahead, give or take LEAD_TRIES, staying on each a while (the bomb takes
--- about a third of a second to reach their screen). In four test sessions moving players were
--- flung 28 times in 31 with the bomb 0.4-0.5 s ahead, but 9 in 15 at 0.25-0.35 s and 5 in 16 at
--- 0.7-0.8 s. It used to learn how far from each fling, and that let it wander off to those, so
--- it stays put now. Where a moving player will be is worked out three ways (see predictAhead).
+-- about a third of a second to reach their screen). On the flung player's own screen, in all four
+-- test sessions that logged it, it took about 0.56 s ahead to be right on them (put 0.45 s ahead,
+-- runners saw it 1 to 3 studs behind them). It used to learn how far from each fling, and that
+-- let it wander off to 0.25 s and to 0.8 s, where moving players were flung 60% and 31% of the
+-- time against 90% at 0.4-0.5 s, so it stays put now. Where a moving player will be is worked
+-- out three ways (see predictAhead).
 -- (It can't be welded on: a weld you make exists only on your screen, and welded to them the
 -- bomb would stop being yours to send. Attaching it like Reset Player, sweeping it back and
 -- forth ahead of them and leaving it in their path all flung less.)
-local LEAD_BASE=0.4
+local LEAD_BASE=0.5
 local LEAD_TRIES={0,0.1,-0.1}
 local LEAD_DWELL=0.45
 -- (a moving player gets at least this long, so every distance is tried)
@@ -20802,6 +20822,9 @@ end
 local CARRY_DEPTH=5
 -- (the bomb last found yours, and kept so since)
 local verified=nil
+-- (the carry's push test: see carry)
+local CARRY_CHECK=1.5
+local carryTest,nextCarryTest,carryFails=nil,0,0
 -- Yours if your own game moves it: pushed up and left alone a few frames, it rises. One that
 -- someone else moves only goes where the game sends it (your screen doesn't move it itself, as
 -- the test target's log showed: a bomb sent at 32768 studs a second stayed put on it between
@@ -20853,6 +20876,17 @@ local function runFling(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
     if not rootOf(LocalPlayer) then return false,"you are not alive" end
     local label=reportName(target)
+    -- (still flying from the last fling, or flung far off: left alone. In the test logs those
+    -- flings only counted the last one again, and sent the bomb thousands of studs after them,
+    -- where one was lost)
+    do
+        local speed=targetRoot.AssemblyLinearVelocity.Magnitude
+        local away=(targetRoot.Position-rootOf(LocalPlayer).Position).Magnitude
+        if speed>FLUNG_SPEED or away>FAR_AWAY then
+            note(("SKIP %s already flung (%.0f studs/s, %.0f studs away)"):format(label,speed,away))
+            return false,"already flung"
+        end
+    end
     local bomb,reason=getBomb()
     -- (a carried one is pushed first, to be sure it's still yours)
     if bomb and bomb==verified and not pushYours(bomb) then
@@ -20958,10 +20992,14 @@ local function runFling(target)
             -- hopping: round HOP_AIM over where they'd stand there, sweeping HOP_SWEEP either way
             local hop=false
             if hopping(history,now) then
-                local floorY=floorBelow(predicted,ignore)
-                if floorY then
+                local standing=landedHeight(history,now)
+                if not standing then
+                    local floorY=floorBelow(predicted,ignore)
+                    standing=floorY and floorY-bottom
+                end
+                if standing then
                     hop=true
-                    predicted=Vector3.new(predicted.X,floorY-bottom+HOP_AIM,predicted.Z)
+                    predicted=Vector3.new(predicted.X,standing+HOP_AIM,predicted.Z)
                 end
             end
             -- jumping or falling: along the arc, but never below the floor under them
@@ -21018,16 +21056,25 @@ local function runFling(target)
             end
         end)
     end
+    -- (straight back under you and stopped, before the fall limit is put back. Left lying on
+    -- them, the game gave it to them a fifth of a second after every miss in the test logs,
+    -- and the next flings went on with a bomb only your screen moved. It's pushed to see it's
+    -- still yours only once it's been back under you a moment: see carry)
+    if bomb and usable(bomb) then pcall(function()
+        local mine=rootOf(LocalPlayer)
+        if mine then
+            if bomb.CanCollide then bomb.CanCollide=false end
+            bomb.CFrame=mine.CFrame*CFrame.new(0,-CARRY_DEPTH,0)
+        end
+        bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
+    end) end
+    carryTest,nextCarryTest=nil,os.clock()+0.5
     if previousLimit~=nil then
         pcall(function()
             local current=workspace.FallenPartsDestroyHeight
             if current~=current then workspace.FallenPartsDestroyHeight=previousLimit end
         end)
     end
-    -- (stopped where it is; between flings it's carried along under you: see CARRY_DEPTH)
-    if bomb and usable(bomb) then pcall(function()
-        bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
-    end) end
     if not ok then stats.lastError=tostring(err) end
     if hit then stats.hits=stats.hits+1 end
     return hit
@@ -21035,8 +21082,6 @@ end
 -- (carried along just under you between flings: see CARRY_DEPTH. Not while Firefly Protection
 -- holds it as its particle helper. Every CARRY_CHECK seconds it's given the push test, left
 -- alone a few frames; failing twice, it's no longer counted yours.)
-local CARRY_CHECK=1.5
-local carryTest,nextCarryTest,carryFails=nil,0,0
 local carry=RunService.Heartbeat:Connect(function()
     local bomb=verified
     if flinging or not alive or not runtimeAlive or not bomb or bomb~=ownBomb then carryTest=nil;return end
