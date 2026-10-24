@@ -20595,6 +20595,9 @@ local MOTION_TIME=1.5
 -- (further off than this, someone isn't on the map with you: flung off it, or in the lobby)
 local FAR_AWAY=1000
 local motion={}
+-- (when each player's present character turned up, for the report: a bomb has gone a third of a
+-- second into a fling right after someone was flung, and they may have just come back)
+local born={}
 local tracker=RunService.Heartbeat:Connect(function()
     if not alive or not runtimeAlive then return end
     local now=os.clock()
@@ -20602,6 +20605,7 @@ local tracker=RunService.Heartbeat:Connect(function()
     for _,plr in ipairs(Players:GetPlayers()) do
         if plr~=LocalPlayer then
             local root=rootOf(plr)
+            if root and (not born[plr] or born[plr].root~=root) then born[plr]={root=root,at=now} end
             local list=motion[plr]
             if root and root.Parent and (not mine or (root.Position-mine.Position).Magnitude<FAR_AWAY) then
                 if not list or list.root~=root then list={root=root};motion[plr]=list end
@@ -20623,7 +20627,7 @@ local tracker=RunService.Heartbeat:Connect(function()
         end
     end
 end)
-local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil end)
+local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil;born[plr]=nil end)
 -- (how they've really moved over the last moment, by the tracker: the speed the game sends for a
 -- flung player can read 0)
 local function movedVelocity(history,now)
@@ -20984,9 +20988,12 @@ local function runFling(target)
     do
         local mine=rootOf(LocalPlayer)
         local velocity=targetRoot.AssemblyLinearVelocity
-        note(("START %s dist=%.0f speed=%.1f ping=%dms duration=%d lead=%.2f"):format(label,
+        -- (how long their character has been about, and whether it has a spawn ForceField)
+        local since=born[target] and born[target].root==targetRoot and os.clock()-born[target].at or -1
+        local shielded=target.Character and target.Character:FindFirstChildOfClass("ForceField") and 1 or 0
+        note(("START %s dist=%.0f speed=%.1f ping=%dms duration=%d lead=%.2f spawned=%.1fs ff=%d"):format(label,
             mine and (targetRoot.Position-mine.Position).Magnitude or -1,Vector3.new(velocity.X,0,velocity.Z).Magnitude,
-            math.floor(pingSeconds()*1000),settings.duration,baseLead()))
+            math.floor(pingSeconds()*1000),settings.duration,baseLead(),since,shielded))
     end
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
     -- put back on them: no limit while it flings, as Reset Player does)
@@ -21419,7 +21426,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d lead=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,baseLead(),cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: most of the way to straight on, halfway over to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. START: spawned = seconds since their character turned up, ff=1 = it has a spawn ForceField. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: most of the way to straight on, halfway over to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
@@ -21556,7 +21563,7 @@ runtime.RegisterReset(function()
     if not runtimeAlive then
         alive=false
         watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect();carry:Disconnect()
-        tracker:Disconnect();leaving:Disconnect();table.clear(motion)
+        tracker:Disconnect();leaving:Disconnect();table.clear(motion);table.clear(born)
         table.clear(recentParts)
     end
 end)
