@@ -20082,7 +20082,8 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    stops being yours
 --  * moving and jumping players are led by your ping and swept over the body
 --  * fling power is fixed at the maximum; it flings straight up, as Fun Bomb's own fling does
---    (the spin decides where they go, so it can't be aimed down)
+--    (the spin decides where they go, so it can't be aimed down); it's put on them after each
+--    physics step, so what the others are sent is the bomb inside them, spinning
 local runtime=env.VisualsV2Runtime
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
@@ -20515,7 +20516,10 @@ local function runFling(target)
             claim(bomb,mine,0.25)
             atTarget=os.clock()
         end
-        local _,dt=RunService.Stepped:Wait()
+        -- (put there after each physics step, not before it: before it, the step carried it far
+        -- above them (50000 studs a second) before it was sent, so the others only ever saw it
+        -- over their heads and you never saw it reach them)
+        local dt=RunService.Heartbeat:Wait()
         phase=phase+(tonumber(dt) or 1/60)*20
         local velocity=targetRoot.AssemblyLinearVelocity
         local lead=math.clamp(pingSeconds()*2+0.03,0.05,0.6)
