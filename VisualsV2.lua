@@ -20082,9 +20082,9 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    stops being yours
 --  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
 --    the physics step, touched against them. It's laid flat, biggest face down, and works its
---    way from just above their head down to their feet, over and over, sent up (or, with Fling
---    Downwards, down) at full power and spinning about the upright. (Reset Player's other
---    trick, setting the bomb's physics replication root to theirs, stopped it flinging at all.)
+--    way slowly from just above their head down to their feet, over and over, sent down at full
+--    power and spinning about the upright. (Reset Player's other trick, setting the bomb's
+--    physics replication root to theirs, stopped it flinging at all.)
 --  * moving and jumping players are led by your ping, each sweep a bit further or nearer ahead
 --    of them than the last (so a wrong guess at their lag still crosses them), kept above the
 --    floor under them
@@ -20095,12 +20095,10 @@ local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
 local POWER=50000
 local MAX_DURATION=4
+local LOOP_DELAY=2.5
 local settings={
     duration=math.clamp(tonumber(C("bombFlingDuration",0.6)) or 0.6,0.1,MAX_DURATION),
-    prediction=math.clamp(tonumber(C("bombFlingPrediction",0)) or 0,0,20),
-    loopDelay=math.clamp(tonumber(C("bombFlingLoopDelay",1)) or 1,0,10),
     auraDistance=math.clamp(tonumber(C("bombFlingAuraStuds",15)) or 15,5,50),
-    downwards=C("bombFlingDownwards",false)==true,
 }
 local selectedPlayers,whitelist={},{}
 local loops={}
@@ -20526,7 +20524,7 @@ local function bodySpan(character,targetRoot)
     end
     return top or 2.5,bottom or -3
 end
-local PASS_TIME=0.1
+local PASS_TIME=0.5
 -- (each sweep is led a different amount ahead of a moving player: their real lag is a guess)
 local LEAD_STEPS={1,0.5,1.5}
 local function pingSeconds()
@@ -20554,13 +20552,10 @@ local function runFling(target)
     -- only held under you when it isn't already yours, so a fling starts straight away
     if not owned(bomb) then claim(bomb,mine,0.6,0.05) end
     stats.flings=stats.flings+1
-    local downwards=settings.downwards
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
-    -- put back on them: no limit while it flings down, as Reset Player does)
+    -- put back on them: no limit while it flings, as Reset Player does)
     local previousLimit=nil
-    if downwards then
-        pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
-    end
+    pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
     local startY=targetRoot.Position.Y
     local atTarget=os.clock()
@@ -20620,7 +20615,6 @@ local function runFling(target)
             -- their lag behind, and the bomb takes yours to reach them
             local lead=math.clamp(pingSeconds()*2+0.05,0.08,0.6)*LEAD_STEPS[pass%#LEAD_STEPS+1]
             local predicted=current+horizontal*lead
-            if horizontal.Magnitude>0.5 and settings.prediction>0 then predicted=predicted+horizontal.Unit*settings.prediction end
             -- jumping or falling: along the arc, but never below the floor under them
             if math.abs(verticalSpeed)>2 then
                 local rise=verticalSpeed*lead-0.5*workspace.Gravity*lead*lead
@@ -20641,7 +20635,7 @@ local function runFling(target)
             -- (spun about the upright, so its big face stays down and the spin throws them sideways)
             pcall(function()
                 bomb.CFrame=CFrame.new(position)*rotation
-                bomb.AssemblyLinearVelocity=Vector3.new(0,downwards and -POWER or POWER,0)
+                bomb.AssemblyLinearVelocity=Vector3.new(0,-POWER,0)
                 bomb.AssemblyAngularVelocity=Vector3.new(0,POWER,0)
             end)
             local head=target.Character and target.Character:FindFirstChild("Head")
@@ -20709,7 +20703,7 @@ local function startLoop(key,body)
             if not ok then stats.lastError=tostring(err) end
             -- (waits for the queued flings to finish before going round again)
             while flinging and loops[key]==token do task.wait(0.1) end
-            task.wait(math.max(0.1,settings.loopDelay))
+            task.wait(LOOP_DELAY)
         end
     end)
 end
@@ -20769,15 +20763,6 @@ toggle("Loop Bomb Fling Player(s)","bombFlingLoopSelected",function(value)
 end)
 section:AddSlider("Fling Duration",0.1,MAX_DURATION,settings.duration,function(value)
     settings.duration=math.clamp(tonumber(value) or 0.6,0.1,MAX_DURATION);SetCfg("bombFlingDuration",settings.duration)
-end)
-addToggle(section,"Fling Downwards",settings.downwards,function(value)
-    settings.downwards=value==true;SetCfg("bombFlingDownwards",settings.downwards)
-end)
-section:AddSlider("Prediction Studs",0,20,settings.prediction,function(value)
-    settings.prediction=math.clamp(tonumber(value) or 0,0,20);SetCfg("bombFlingPrediction",settings.prediction)
-end)
-section:AddSlider("Loop Fling Delay",0,10,settings.loopDelay,function(value)
-    settings.loopDelay=math.clamp(tonumber(value) or 1,0,10);SetCfg("bombFlingLoopDelay",settings.loopDelay)
 end)
 local function autoFling(name,key,finder)
     local recent={}
@@ -20953,7 +20938,7 @@ runtime.RegisterReset(function()
     if anti.connection then anti.connection:Disconnect();anti.connection=nil end
     for part in pairs(anti.changed) do release(part) end
     for _,spec in ipairs(BIND_KEYS) do BindableButtons:DeleteBButton(spec.id) end
-    settings.duration,settings.prediction,settings.loopDelay,settings.auraDistance=0.6,0,1,15
+    settings.duration,settings.auraDistance=0.6,15
     if not runtimeAlive then
         alive=false
         watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect()
