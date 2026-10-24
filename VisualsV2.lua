@@ -20076,9 +20076,9 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --  * "no bomb" is only reported after deploying one really failed
 --  * the bomb is thrown the way the game itself throws it (its Remote told where: at your
 --    feet, and 50, as the game's own toy and Bomb Jump send it; Fun Bomb's empty throw never
---    made one), watched a moment to be sure it's yours, and carried along just under you
---    between flings so it stays yours (see CARRY_DEPTH); one given to someone else is replaced
---    by a new one taken out, once the toy can be thrown again
+--    made one) the way it will end up nearest you (see throwWay), checked to be yours, and
+--    carried along just under you between flings so it stays yours (see CARRY_DEPTH); one given
+--    to someone else is replaced by a new one taken out, once the toy can be thrown again
 --  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
 --    the physics step, touched against them. It's laid flat, biggest face down, and works its
 --    way slowly from just above their head down to their feet, over and over, sent down at full
@@ -20248,7 +20248,10 @@ local watch=workspace.DescendantAdded:Connect(function(object)
 end)
 local unwatch=workspace.DescendantRemoving:Connect(function(object)
     if bombs[object] then bombs[object]=nil end
-    if object==ownBomb then ownBomb=nil end
+    if object==ownBomb then
+        ownBomb=nil
+        note(("BOMB gone (it went off), %.0f s after the last throw"):format(os.clock()-lastDeploy.at))
+    end
 end)
 -- (bombs already out when the add-on starts: one pass, a slice per frame)
 task.spawn(function()
@@ -20400,6 +20403,41 @@ local function failDeploy(reason)
 end
 -- Takes out a Fake Bomb (thrown just in front of you) and waits until it turns up. One at a
 -- time; a failure waits longer before the next try.
+-- (how far the nearest other player is from a spot)
+local function nearestOther(position)
+    local nearest=math.huge
+    for _,plr in ipairs(Players:GetPlayers()) do
+        local root=plr~=LocalPlayer and rootOf(plr)
+        if root then nearest=math.min(nearest,(root.Position-position).Magnitude) end
+    end
+    return nearest
+end
+-- The way to throw it so it ends up nearest you. The game throws the Fake Bomb the way you face
+-- (where it's told to throw it hardly matters), and it flies and rolls some 20 studs or more
+-- before it stops; it's then given to whoever it's nearest. Thrown the way you faced the player
+-- about to be flung, it went to them. So of eight ways round you, the one where it stops (at a
+-- wall, or some 20 studs out) furthest from everyone else for how far it is from you.
+local THROW_REACH=22
+local function throwWay(from)
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    local ignore={}
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then ignore[#ignore+1]=plr.Character end
+    end
+    params.FilterDescendantsInstances=ignore
+    local best,bestScore=Vector3.new(0,0,-1),-math.huge
+    for step=0,7 do
+        local angle=step*math.pi/4
+        local way=Vector3.new(math.cos(angle),0,math.sin(angle))
+        local reach=THROW_REACH
+        local ok,hit=pcall(function() return workspace:Raycast(from,way*reach,params) end)
+        if ok and hit then reach=math.max(0,(hit.Position-from).Magnitude-1) end
+        local score=math.min(nearestOther(from+way*reach),200)-reach
+        if score>bestScore then best,bestScore=way,score end
+    end
+    return best
+end
 local function deployBomb()
     if deploying then
         local deadline=os.clock()+3
@@ -20431,20 +20469,31 @@ local function deployBomb()
         local backpack=LocalPlayer:FindFirstChildOfClass("Backpack")
         local held=character:FindFirstChildOfClass("Tool")
         if held==tool then held=nil end
-        -- (thrown down at your feet: thrown ahead of you, it flew off at the throw's speed and
-        -- was given to whoever it rolled nearest, often the player about to be flung)
-        local position=root.Position-Vector3.new(0,3,0)
+        -- (thrown the way it ends up nearest you: see throwWay. You're turned that way for the
+        -- throw, a tenth of a second, then back.)
+        local way=throwWay(root.Position)
+        local position=root.Position+way*4-Vector3.new(0,3,0)
         lastDeploy.at,lastDeploy.position=os.clock(),position
         stats.deploys=stats.deploys+1
-        note("TAKEOUT thrown")
+        note(("TAKEOUT thrown, nearest other player %.0f studs from where it should stop"):format(nearestOther(root.Position+way*THROW_REACH)))
         local thrownWatch=ThrownBomb.Begin(tool,position)
+        local facing=root.CFrame-root.CFrame.Position
+        local autoRotate=humanoid.AutoRotate
+        pcall(function()
+            humanoid.AutoRotate=false
+            root.CFrame=CFrame.lookAt(root.Position,root.Position+way)
+        end)
         -- in hand (as long as Bomb Jump keeps it there, or until the bomb shows up), thrown the
         -- way the game throws it, then back with what you held back in your hand
         pcall(function() tool.Parent=character end)
-        RunService.Heartbeat:Wait()
-        pcall(function() throw:FireServer(CFrame.new(position)*CFrame.Angles(-math.pi/2,0,0),50) end)
+        task.wait(0.1)
+        pcall(function() throw:FireServer(CFrame.lookAt(position,position+way),50) end)
         local inHand=os.clock()+0.5
         repeat task.wait(0.03) until (ownBomb and usable(ownBomb)) or os.clock()>inHand
+        pcall(function()
+            if root.Parent then root.CFrame=CFrame.new(root.Position)*facing end
+            humanoid.AutoRotate=autoRotate
+        end)
         pcall(function() if tool.Parent==character then tool.Parent=backpack or tool.Parent end end)
         if held and held.Parent and held.Parent~=character then pcall(function() humanoid:EquipTool(held) end) end
         -- (and Increase Inventory's Auto Get Tools puts your toys back in their slots)
@@ -20553,13 +20602,17 @@ local PASS_TIME=0.5
 -- ahead depends on both players' lag, which can't be read, so a fling tries a few distances in
 -- turn (LEAD_TRIES, round the one that worked last), staying on each a while (the bomb takes
 -- about a third of a second to reach their screen); the one it was on when it last flung
--- someone is kept for next time. In the test logs a walking player was flung with it about a
--- quarter of a second ahead. (It can't be welded on: a weld you make exists only on your screen,
--- and welded to them the bomb would stop being yours to send. Attaching it like Reset Player,
--- sweeping it back and forth ahead of them and leaving it in their path all flung less.)
-local LEAD_TRIES={0,0.1,-0.08}
+-- someone is kept for next time. In the test logs it had to be about 0.55 s ahead: put 0.27 s
+-- and 0.37 s ahead, a walking player saw it 2.4 and 1.4 studs behind them. (It can't be welded
+-- on: a weld you make exists only on your screen, and welded to them the bomb would stop being
+-- yours to send. Attaching it like Reset Player, sweeping it back and forth ahead of them and
+-- leaving it in their path all flung less.)
+local LEAD_TRIES={0,0.1,-0.1}
 local LEAD_DWELL=0.45
-local leadExtra=0.25
+local leadExtra=0.5
+-- (a hit shows on your screen about this long after the bomb that did it was put there: it
+-- takes a third of a second to reach them, and their fling about a quarter to come back)
+local HIT_SEEN_AFTER=0.55
 -- (a moving player gets at least this long, so every distance is tried)
 local MOVING_TIME=1.5
 local function pingSeconds()
@@ -20586,22 +20639,28 @@ end
 local CARRY_DEPTH=5
 -- (the bomb last found yours, and kept so since)
 local verified=nil
--- (no other player nearer it than you: the one the game gives it to)
-local function nearestYou(part)
-    local mine=rootOf(LocalPlayer)
-    if not mine then return false end
-    local ok,position=pcall(function() return part.Position end)
+-- Yours if your own game moves it: pushed up and left alone a few frames, it rises. One that
+-- someone else moves only goes where the game sends it (your screen doesn't move it itself, as
+-- the test target's log showed: a bomb sent at 32768 studs a second stayed put on it between
+-- updates), so it doesn't rise. It's put back, stopped, after either way (so the push itself
+-- isn't then taken for it moving).
+local function pushYours(bomb)
+    local ok,before=pcall(function() return bomb.CFrame end)
     if not ok then return false end
-    local distance=(position-mine.Position).Magnitude
-    for _,plr in ipairs(Players:GetPlayers()) do
-        local root=plr~=LocalPlayer and rootOf(plr)
-        if root and (root.Position-position).Magnitude<distance then return false end
-    end
-    return distance<30
+    pcall(function() bomb.AssemblyLinearVelocity=Vector3.new(0,30,0) end)
+    for _=1,3 do RunService.Heartbeat:Wait() end
+    if not usable(bomb) then return false end
+    local moved=(bomb.Position-before.Position).Magnitude
+    local yours=moved>0.3 and receiveAge(bomb)<=0.03
+    pcall(function()
+        bomb.CFrame=before
+        bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
+    end)
+    return yours
 end
 -- (watched for up to that long without being touched: yours once nothing has come in for it
--- from the game for a few frames and it's either moving under your own game or lying still
--- nearer you than anyone else)
+-- from the game for a few frames and it's either moving under your own game, or, lying still,
+-- passes the push test)
 local function watchYours(bomb,seconds)
     local started,quiet=os.clock(),0
     repeat
@@ -20609,7 +20668,8 @@ local function watchYours(bomb,seconds)
         if receiveAge(bomb)>0.03 then quiet=0 else quiet=quiet+1 end
         if quiet>=6 then
             local ok,speed=pcall(function() return bomb.AssemblyLinearVelocity.Magnitude end)
-            if (ok and speed>1) or nearestYou(bomb) then return true end
+            if ok and speed>1 then return true end
+            return pushYours(bomb)
         end
         RunService.Heartbeat:Wait()
     until os.clock()-started>seconds
@@ -20631,6 +20691,12 @@ local function runFling(target)
     if not rootOf(LocalPlayer) then return false,"you are not alive" end
     local label=reportName(target)
     local bomb,reason=getBomb()
+    -- (a carried one is pushed first, to be sure it's still yours)
+    if bomb and bomb==verified and not pushYours(bomb) then
+        note(("CHECK %s the carried bomb isn't yours any more (nearest other player %.0f studs from it, ra=%.2f)"):format(
+            label,nearestOther(bomb.Position),receiveAge(bomb)))
+        verified=nil
+    end
     -- (not known to be yours yet: watched a moment first; one given to someone else is
     -- replaced by a new one taken out, once the toy can be thrown again)
     if bomb and bomb~=verified then
@@ -20680,7 +20746,7 @@ local function runFling(target)
     local track={}
     local limit=settings.duration
     -- (the distances tried for a moving player, to tell which one reached them)
-    local tried,lastLead={},0
+    local tried={}
     local lastSample=-math.huge
     local ok,err=pcall(function()
         while os.clock()-started<limit and alive and runtimeAlive do
@@ -20721,9 +20787,8 @@ local function runFling(target)
             -- moving: a little ahead of where you see them, by the distance being tried
             local moving=horizontal.Magnitude>2
             if moving then limit=math.max(limit,MOVING_TIME) end
-            local extra=math.clamp(leadExtra+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1],0,0.8)
+            local extra=math.clamp(leadExtra+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1],0.2,1)
             local lead=math.clamp(pingSeconds(),0,0.4)*2+extra
-            lastLead=lead
             tried[#tried+1]={at=now,extra=extra,moving=moving}
             local predicted=moving and current+horizontal*lead or current
             -- jumping or falling: along the arc, but never below the floor under them
@@ -20796,9 +20861,9 @@ local function runFling(target)
     if not ok then stats.lastError=tostring(err) end
     if hit then
         stats.hits=stats.hits+1
-        -- (the distance it was on when it reached them, as near as can be told: they're seen
-        -- flung about as long after as it was ahead of them; kept for next time)
-        local at=hitAt-lastLead
+        -- (the distance it was on when it reached them, as near as can be told: see
+        -- HIT_SEEN_AFTER; kept for next time)
+        local at=hitAt-HIT_SEEN_AFTER
         for index=#tried,1,-1 do
             if tried[index].at<=at then
                 if tried[index].moving then leadExtra=tried[index].extra end
@@ -20809,18 +20874,49 @@ local function runFling(target)
     return hit
 end
 -- (carried along just under you between flings: see CARRY_DEPTH. Not while Firefly Protection
--- holds it as its particle helper.)
+-- holds it as its particle helper. Every CARRY_CHECK seconds it's given the push test, left
+-- alone a few frames; failing twice, it's no longer counted yours.)
+local CARRY_CHECK=1.5
+local carryTest,nextCarryTest,carryFails=nil,0,0
 local carry=RunService.Heartbeat:Connect(function()
     local bomb=verified
-    if flinging or not alive or not runtimeAlive or not bomb or bomb~=ownBomb then return end
-    if not usable(bomb) then verified=nil;return end
+    if flinging or not alive or not runtimeAlive or not bomb or bomb~=ownBomb then carryTest=nil;return end
+    if not usable(bomb) then verified,carryTest=nil,nil;return end
     local protection=runtime.FireflyProtection
     if protection and type(protection.CurrentBomb)=="function" then
         local ok,held=pcall(protection.CurrentBomb)
-        if ok and held==bomb then return end
+        if ok and held==bomb then carryTest=nil;return end
     end
     local mine=rootOf(LocalPlayer)
     if not mine then return end
+    local now=os.clock()
+    if carryTest then
+        carryTest.frames=carryTest.frames+1
+        if carryTest.frames<3 then return end
+        local ok,moved=pcall(function() return (bomb.Position-carryTest.from).Magnitude end)
+        carryTest=nil
+        if ok and moved>0.3 and receiveAge(bomb)<=0.03 then
+            carryFails=0
+        else
+            carryFails=carryFails+1
+            note(("CARRY the bomb didn't rise when pushed (%d), nearest other player %.0f studs from it, ra=%.2f"):format(
+                carryFails,nearestOther(bomb.Position),receiveAge(bomb)))
+            if carryFails>=2 then
+                verified,carryFails=nil,0
+                pcall(function() bomb.AssemblyLinearVelocity=Vector3.zero end)
+                note("CARRY lost: someone else moves the bomb now")
+                return
+            end
+        end
+    elseif now>=nextCarryTest then
+        nextCarryTest=now+CARRY_CHECK
+        local ok,from=pcall(function() return bomb.Position end)
+        if ok then
+            carryTest={from=from,frames=0}
+            pcall(function() bomb.AssemblyLinearVelocity=Vector3.new(0,30,0) end)
+            return
+        end
+    end
     pcall(function()
         if bomb.CanCollide then bomb.CanCollide=false end
         bomb.CFrame=mine.CFrame*CFrame.new(0,-CARRY_DEPTH,0)
