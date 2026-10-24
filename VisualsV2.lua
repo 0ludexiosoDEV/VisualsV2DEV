@@ -20086,7 +20086,7 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    physics replication root to theirs, stopped it flinging at all.)
 --  * moving players: the bomb rides along a little ahead of where you see them (see
 --    LEAD_TRIES), round their turn, through their weaving and up where hoppers are (see
---    predictAhead, HOP_AIM); standing ones have it right on them
+--    predictAhead, HOP_MARGIN); standing ones have it right on them
 --  * the Fake Bomb can only be thrown every 22 s (Bomb Jump's throws count too): while it can't,
 --    you're told how long is left instead of a throw that puts out nothing
 local runtime=env.VisualsV2Runtime
@@ -20583,9 +20583,12 @@ end
 local PATH_TIME=1
 local ARC_LIMIT=2.2
 -- Every other player's last MOTION_TIME seconds (where they were, which way they were going and
--- how fast they were rising), kept all the time for the ones within 400 studs, so a fling knows
--- from its start whether they're weaving, turning or hopping instead of finding out a second in.
+-- how fast they were rising), kept all the time for the ones within FAR_AWAY studs, so a fling
+-- knows from its start whether they're weaving, turning or hopping (or still flying from the last
+-- fling) instead of finding out a second in.
 local MOTION_TIME=1.5
+-- (further off than this, someone isn't on the map with you: flung off it, or in the lobby)
+local FAR_AWAY=1000
 local motion={}
 local tracker=RunService.Heartbeat:Connect(function()
     if not alive or not runtimeAlive then return end
@@ -20595,7 +20598,7 @@ local tracker=RunService.Heartbeat:Connect(function()
         if plr~=LocalPlayer then
             local root=rootOf(plr)
             local list=motion[plr]
-            if root and root.Parent and (not mine or (root.Position-mine.Position).Magnitude<400) then
+            if root and root.Parent and (not mine or (root.Position-mine.Position).Magnitude<FAR_AWAY) then
                 if not list or list.root~=root then list={root=root};motion[plr]=list end
                 local position,velocity=root.Position,root.AssemblyLinearVelocity
                 -- (rising speed: the one the game sends, or from where they were a tenth of a
@@ -20616,19 +20619,38 @@ local tracker=RunService.Heartbeat:Connect(function()
     end
 end)
 local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil end)
--- Hopping: two take-offs or more (starting to rise faster than HOP_RISE) in the last 1.5 s. The
--- test logs showed the bomb 3 to 6 studs under a hopping player whenever it was level with them:
--- aimed where they'd land, as for one jump, while a hopper is mostly in the air. Kept round
--- HOP_AIM over where their root is standing (about their standing head height), sweeping
--- HOP_SWEEP either way, the bomb was level with them 75 to 82% of the time in simulation against
--- 52 to 67% aimed where they'd land; someone who jumps now and then is still followed along their
--- jump. Where their root is standing is where it last was when they landed (the lowest it's been
--- in the last HOP_LANDED seconds): taken from the floor found under them, it was once 5 to 6
--- studs too low for a whole fling, the bomb lying on the floor under someone hopping in place.
+-- (how fast they've really moved over the last moment, by the tracker: the speed the game sends
+-- for a flung player can read 0)
+local function movedSpeed(history,now)
+    local last=history and history[#history]
+    if not last or now-last.at>0.1 then return 0 end
+    for index=#history-1,1,-1 do
+        local entry=history[index]
+        if last.at-entry.at>=0.15 then return (last.position-entry.position).Magnitude/(last.at-entry.at) end
+    end
+    return 0
+end
+-- Hopping: two take-offs or more (starting to rise faster than HOP_RISE) in the last 1.5 s. A
+-- hopper is mostly in the air, so the bomb isn't put where they'd land (as for one jump: the test
+-- logs showed it 3 to 6 studs under them then) but kept at one height, just over their soles at
+-- the top of a jump (HOP_MARGIN clear, sweeping HOP_SWEEP either way; how high a jump goes is
+-- their Humanoid's), so every hop brings their head and body up into it as it's sent down. Lower,
+-- at their chest as they stand (as it was), the top of each hop took their feet over it and they
+-- came down onto it: sent down, a bomb under their feet holds them up like a step, and the test
+-- target hopped on it again and again. Kept clear of their feet, no hop landed on it in
+-- simulation and it was in a hopper's body 51 to 78% of the time; someone who jumps now and then
+-- is still followed along their jump. Where their root stands is where it last was when they
+-- landed (the lowest it's been in the last HOP_LANDED seconds): taken from the floor found under
+-- them, it was once 5 to 6 studs too low for a whole fling. Someone hopping in place can also look
+-- to land 4 to 5 studs lower than they do (twice, your screen and theirs agreed on the top of each
+-- hop but not the bottom; running hoppers' landings agreed), so for them it's never taken lower
+-- than the top of their hop less what a jump rises.
 local HOP_RISE=20
-local HOP_AIM=2.25
-local HOP_SWEEP=1
+local HOP_MARGIN=0.2
+local HOP_SWEEP=0.5
 local HOP_LANDED=1
+-- (how high a jump takes them when their Humanoid can't be read: Roblox's own)
+local HOP_JUMP=7.2
 local function hopping(history,now)
     local count,below=0,false
     for _,entry in ipairs(history) do
@@ -20643,13 +20665,27 @@ local function hopping(history,now)
     end
     return count>=2
 end
--- (the height their root was at when they last landed, or nil)
-local function landedHeight(history,now)
-    local lowest=nil
+-- (the height their root stands at: the lowest it's been in the last HOP_LANDED seconds, but,
+-- given what a jump rises, never lower than the top of their hop less that; or nil)
+local function standingHeight(history,now,rise)
+    local lowest,highest=nil,nil
     for _,entry in ipairs(history) do
-        if now-entry.at<=HOP_LANDED then lowest=math.min(lowest or math.huge,entry.position.Y) end
+        if now-entry.at<=HOP_LANDED then
+            local y=entry.position.Y
+            lowest,highest=math.min(lowest or y,y),math.max(highest or y,y)
+        end
     end
+    if lowest and rise then return math.max(lowest,highest-rise) end
     return lowest
+end
+-- (how high a jump takes their root, from their Humanoid's settings, or nil)
+local function jumpRise(character)
+    local ok,rise=pcall(function()
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        if humanoid.UseJumpPower then return humanoid.JumpPower^2/(2*workspace.Gravity) end
+        return humanoid.JumpHeight
+    end)
+    return ok and tonumber(rise) and rise>0 and rise or nil
 end
 local function headingOf(velocity) return math.atan2(velocity.Z,velocity.X) end
 local function wrapAngle(angle) return (angle+math.pi)%(2*math.pi)-math.pi end
@@ -20749,8 +20785,6 @@ local function predictAhead(path,now,current,horizontal,lead)
 end
 -- (flung: going far faster than anyone runs, or well off the height they started at)
 local FLUNG_SPEED=140
--- (further off than this, someone has been flung off the map, not walked there)
-local FAR_AWAY=1000
 local function flungNow(targetRoot,startY,measured)
     return targetRoot.AssemblyLinearVelocity.Magnitude>FLUNG_SPEED or Vector3.new(measured.X,0,measured.Z).Magnitude>45
         or measured.Magnitude>100 or math.abs(targetRoot.Position.Y-startY)>25
@@ -20876,13 +20910,18 @@ local function runFling(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
     if not rootOf(LocalPlayer) then return false,"you are not alive" end
     local label=reportName(target)
-    -- (still flying from the last fling, or flung far off: left alone. In the test logs those
-    -- flings only counted the last one again, and sent the bomb thousands of studs after them,
-    -- where one was lost)
+    -- (too far off to be on the map with you, or still flying from the last fling, by the speed
+    -- the game sends or by how fast they really move: left alone. In the test logs those flings
+    -- only counted the last one again, and sent the bomb thousands of studs after them, where one
+    -- was lost)
     do
-        local speed=targetRoot.AssemblyLinearVelocity.Magnitude
         local away=(targetRoot.Position-rootOf(LocalPlayer).Position).Magnitude
-        if speed>FLUNG_SPEED or away>FAR_AWAY then
+        if away>FAR_AWAY then
+            note(("SKIP %s out of reach (%.0f studs away)"):format(label,away))
+            return false,"out of reach"
+        end
+        local speed=math.max(targetRoot.AssemblyLinearVelocity.Magnitude,movedSpeed(motion[target],os.clock()))
+        if speed>FLUNG_SPEED then
             note(("SKIP %s already flung (%.0f studs/s, %.0f studs away)"):format(label,speed,away))
             return false,"already flung"
         end
@@ -20989,17 +21028,20 @@ local function runFling(target)
             local ignore={bomb}
             if target.Character then ignore[#ignore+1]=target.Character end
             if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
-            -- hopping: round HOP_AIM over where they'd stand there, sweeping HOP_SWEEP either way
+            -- hopping: just over where their soles get to at the top of a jump, sweeping HOP_SWEEP
+            -- either way (see HOP_MARGIN)
             local hop=false
             if hopping(history,now) then
-                local standing=landedHeight(history,now)
+                local jump=jumpRise(target.Character)
+                local standing=standingHeight(history,now,not moving and jump or nil)
                 if not standing then
                     local floorY=floorBelow(predicted,ignore)
                     standing=floorY and floorY-bottom
                 end
                 if standing then
                     hop=true
-                    predicted=Vector3.new(predicted.X,standing+HOP_AIM,predicted.Z)
+                    local clear=standing+(jump or HOP_JUMP)+bottom+thickness/2+HOP_SWEEP+HOP_MARGIN
+                    predicted=Vector3.new(predicted.X,clear,predicted.Z)
                 end
             end
             -- jumping or falling: along the arc, but never below the floor under them
@@ -21357,7 +21399,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d lead=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,baseLead(),cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: halfway to the middle of their weaving; +hop: up where a hopper is) and the turn (radians/s); moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: halfway to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
