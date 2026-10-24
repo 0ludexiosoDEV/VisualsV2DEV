@@ -20080,10 +20080,10 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    a loose part to the player next to it, and only the bomb's owner can move it for
 --    everyone); then it goes to the target in short bursts, coming back to you whenever it
 --    stops being yours
---  * moving and jumping players are led by your ping and swept over the body
---  * fling power is fixed at the maximum; it flings straight up, as Fun Bomb's own fling does
---    (the spin decides where they go, so it can't be aimed down); it's put on them after each
---    physics step, so what the others are sent is the bomb inside them, spinning
+--  * the bomb is attached to the target the way Reset Player (aux0on) attaches you: put at
+--    their head every frame after the physics step, spinning and sent down at full power, its
+--    physics replication root set to their HumanoidRootPart and touched against them, so the
+--    fling lands almost instantly
 local runtime=env.VisualsV2Runtime
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
@@ -20466,13 +20466,29 @@ end
 local flingQueue={}
 local flinging=false
 local lastMissingNotice=-math.huge
-local function pingSeconds()
-    local ok,value=pcall(function() return LocalPlayer:GetNetworkPing() end)
-    return ok and tonumber(value) or 0.1
+-- Attached the way Reset Player (aux0on) attaches you to its target: the bomb's physics
+-- replication root is set to their HumanoidRootPart, so everyone else is sent the bomb as part
+-- of their assembly (right inside them, with no lag behind them), and it's touched against their
+-- root and head every frame so the hit registers straight away
+local setHidden=sethiddenproperty or env.sethiddenproperty
+local instanceHandle=InstanceHandle or env.InstanceHandle
+local touchInterest=firetouchinterest or env.firetouchinterest
+local function setRootReference(part,target)
+    if type(setHidden)~="function" then return end
+    pcall(function()
+        if instanceHandle and type(instanceHandle.new)=="function" then setHidden(part,"PhysicsRepRootRef",instanceHandle.new(target)) end
+    end)
+    pcall(setHidden,part,"PhysicsRepRootPart",target)
 end
--- (Fun Bomb's own fling: straight up, at full power)
-local function flingVelocity()
-    return Vector3.new(0,POWER,0)
+local function clearRootReference(part)
+    if type(setHidden)~="function" or not part then return end
+    pcall(setHidden,part,"PhysicsRepRootRef",nil)
+    pcall(setHidden,part,"PhysicsRepRootPart",nil)
+end
+local function touch(a,b)
+    if type(touchInterest)~="function" or not (a and b) then return end
+    pcall(touchInterest,a,b,0)
+    pcall(touchInterest,a,b,1)
 end
 local function flung(targetRoot,startY)
     local velocity=targetRoot.AssemblyLinearVelocity
@@ -20488,56 +20504,69 @@ local function runFling(target)
     end
     local mine=rootOf(LocalPlayer)
     if not mine then return false,"you are not alive" end
-    -- under you first (you see it there), so it's yours before it goes to them
-    claim(bomb,mine,0.6,0.15)
+    -- only held under you when it isn't already yours, so a fling starts straight away
+    clearRootReference(bomb)
+    if not owned(bomb) then claim(bomb,mine,0.6,0.03) end
     stats.flings=stats.flings+1
+    -- (sent 50000 studs a second downwards, a step can carry it past the map's fall limit before
+    -- it's put back on them: no limit while it flings, as Reset Player does)
+    local previousLimit
+    pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
     local startY=targetRoot.Position.Y
     local atTarget=os.clock()
-    local phase=math.random()*10
     local hit=false
-    while os.clock()-started<settings.duration and alive and runtimeAlive do
-        if not usable(bomb) then
-            -- it went off: put another one out straight away and carry on
-            bomb=nil
-            local fresh=deployBomb()
-            if not fresh then break end
-            bomb=fresh
-            mine=rootOf(LocalPlayer)
-            if not mine or not claim(bomb,mine,0.5,0.15) then break end
-            atTarget=os.clock()
+    local ok,err=pcall(function()
+        while os.clock()-started<settings.duration and alive and runtimeAlive do
+            if not usable(bomb) then
+                -- it went off: put another one out straight away and carry on
+                clearRootReference(bomb)
+                bomb=nil
+                local fresh=deployBomb()
+                if not fresh then break end
+                bomb=fresh
+                mine=rootOf(LocalPlayer)
+                if not mine then break end
+                if not owned(bomb) and not claim(bomb,mine,0.5,0.03) then break end
+                atTarget=os.clock()
+            end
+            if not targetRoot.Parent or not aliveCharacter(target) then break end
+            if flung(targetRoot,startY) then hit=true;break end
+            -- no longer ours (the game gives a part to whoever is closest): back to you a moment
+            if os.clock()-atTarget>0.3 and not owned(bomb) then
+                mine=rootOf(LocalPlayer)
+                if not mine then break end
+                clearRootReference(bomb)
+                claim(bomb,mine,0.25)
+                atTarget=os.clock()
+            end
+            -- (put there after each physics step, as Reset Player does)
+            RunService.Heartbeat:Wait()
+            if not targetRoot.Parent or not usable(bomb) then continue end
+            local head=target.Character and target.Character:FindFirstChild("Head")
+            local position=head and head.Parent and head.Position or targetRoot.Position+Vector3.new(0,5,0)
+            if settings.prediction>0 then
+                local velocity=targetRoot.AssemblyLinearVelocity
+                local horizontal=Vector3.new(velocity.X,0,velocity.Z)
+                if horizontal.Magnitude>0.2 then position=position+horizontal.Unit*settings.prediction end
+            end
+            pcall(function()
+                bomb.CFrame=CFrame.new(position)*CFrame.Angles(math.pi/2,0,0)
+                bomb.AssemblyLinearVelocity=Vector3.new(0,-POWER,0)
+                bomb.AssemblyAngularVelocity=Vector3.new(7500,7500,7500)
+            end)
+            for _=1,5 do
+                touch(bomb,targetRoot)
+                if head then touch(bomb,head) end
+            end
+            setRootReference(bomb,targetRoot)
         end
-        if not targetRoot.Parent or not aliveCharacter(target) then break end
-        if flung(targetRoot,startY) then hit=true;break end
-        -- no longer ours (the game gives a part to whoever is closest): back to you a moment
-        if os.clock()-atTarget>0.3 and not owned(bomb) then
-            mine=rootOf(LocalPlayer)
-            if not mine then break end
-            claim(bomb,mine,0.25)
-            atTarget=os.clock()
-        end
-        -- (put there after each physics step, not before it: before it, the step carried it far
-        -- above them (50000 studs a second) before it was sent, so the others only ever saw it
-        -- over their heads and you never saw it reach them)
-        local dt=RunService.Heartbeat:Wait()
-        phase=phase+(tonumber(dt) or 1/60)*20
-        local velocity=targetRoot.AssemblyLinearVelocity
-        local lead=math.clamp(pingSeconds()*2+0.03,0.05,0.6)
-        local horizontal=Vector3.new(velocity.X,0,velocity.Z)
-        local predicted=targetRoot.Position+horizontal*lead
-        if horizontal.Magnitude>0.2 then predicted=predicted+horizontal.Unit*settings.prediction end
-        -- jumping/falling: follow the arc
-        local humanoid=target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-        local airborne=humanoid and humanoid.FloorMaterial==Enum.Material.Air
-        if airborne then predicted=predicted+Vector3.new(0,velocity.Y*lead-0.5*workspace.Gravity*lead*lead,0) end
-        -- sweep from the feet to the head and around the body
-        local sweep=Vector3.new(math.cos(phase*1.7)*0.6,math.sin(phase)*1.4,math.sin(phase*1.7)*0.6)
-        pcall(function()
-            bomb.CFrame=CFrame.new(predicted+sweep)*CFrame.Angles(phase*3,phase*5,phase*7)
-            bomb.AssemblyLinearVelocity=flingVelocity()
-            bomb.AssemblyAngularVelocity=Vector3.new(POWER,POWER,POWER)
-        end)
-    end
+    end)
+    if bomb then clearRootReference(bomb) end
+    pcall(function()
+        local current=workspace.FallenPartsDestroyHeight
+        if current~=current and previousLimit~=nil then workspace.FallenPartsDestroyHeight=previousLimit end
+    end)
     -- park it back under you, still and ready for the next one
     if bomb and usable(bomb) then
         mine=rootOf(LocalPlayer)
@@ -20546,6 +20575,7 @@ local function runFling(target)
             bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
         end) end
     end
+    if not ok then stats.lastError=tostring(err) end
     if hit then stats.hits=stats.hits+1 end
     return hit
 end
