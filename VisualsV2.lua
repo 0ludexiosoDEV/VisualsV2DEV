@@ -41,7 +41,21 @@ if type(getgenv) == "function" then
     if ok and type(result) == "table" then env = result end
 end
 
-;(function()
+-- Each part of the add-on is built on its own: one that runs into an error is skipped (named in
+-- the console, with a notice) and every part after it still loads. (Before, one error, like the
+-- Interception Area's on Delta, stopped every section after it from appearing.)
+local function vv2Section(build,label)
+    local ok,problem=xpcall(build,function(message)
+        local traced=nil
+        pcall(function() traced=debug.traceback(tostring(message),2) end)
+        return traced or tostring(message)
+    end)
+    if ok then return end
+    pcall(warn,"[Visuals V2] "..tostring(label).." couldn't load; the rest still works.\n"..tostring(problem))
+    pcall(function() shared.Notify("Visuals V2: "..tostring(label).." couldn't load. The rest still works (details in the console).",6) end)
+end
+
+;vv2Section(function()
     local bridge=env.VisualsV2ControlAudioBridge
     if type(bridge)~="table" then bridge={methods={}};env.VisualsV2ControlAudioBridge=bridge end
     local soundService=game:GetService("SoundService")
@@ -78,7 +92,7 @@ end
         end
         sample:Destroy()
     end
-end)()
+end,"Part at line 58")
 
 mainTab = shared.CreateTab("Visuals V2","/0ludexiosoDEV/VisualsV2DEV/refs/heads/main/icon")
 
@@ -338,13 +352,13 @@ local function addDropdown(section, name, items, defaultValue, callback, notific
     return type(rawController)=="table" and controller or rawController
 end
 
-;(function()
+;vv2Section(function()
     local previousBridge=LocalPlayer:FindFirstChild("VisualsV2_RuntimeBridge")
     if previousBridge and previousBridge:IsA("BindableFunction") and previousBridge:GetAttribute("VisualsV2_RuntimeBridge") then
         pcall(function() previousBridge:Invoke("Cleanup") end)
         pcall(function() previousBridge:Destroy() end)
     end
-end)()
+end,"Part at line 355")
 
 local previousRuntime = env.VisualsV2Runtime
 if type(previousRuntime) == "table" and type(previousRuntime.Cleanup) == "function" then
@@ -437,7 +451,7 @@ end
 -- pictures (cut from the icon) are inside the add-on, so nothing is downloaded; where the
 -- executor can't show a picture from a file, or the picture fails to load, the same
 -- sparkles are drawn from the icon's outline instead.
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 -- centre and size of each sparkle within the icon (shares of its width/height), beat
 -- offset, and its picture (PNG, base64)
@@ -698,12 +712,12 @@ runtime.LoadingScreen={Finish=finish,Gui=gui,StillLoading=stillLoading}
 -- it's gone by 45 s whatever happens)
 task.delay(30,finish)
 runtime.RegisterReset(function() if not runtimeAlive then animation:Disconnect();pcall(function() gui:Destroy() end) end end)
-end)()
+end,"Part at line 454")
 -- Overdrive version check, for the whole add-on: an Overdrive older than 3.9 (fake loaders
 -- carry old version numbers) is refused with the official-loadstring message. The version
 -- is read from Overdrive's own menu (its "Version" label, the same one Overdrive's crash
 -- handler checks). If no version can be found, nothing is refused.
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local MINIMUM={3,9}
 local MESSAGE="You’re using a fake version of Overdrive! Please only use the official loadstring located in our Discord server: discord.gg/overdrivehub"
@@ -759,9 +773,9 @@ task.spawn(function()
         task.wait(1)
     end
 end)
-end)()
+end,"Part at line 720")
 
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local bridge=Instance.new("BindableFunction")
 bridge.Name="VisualsV2_RuntimeBridge"
@@ -779,12 +793,12 @@ bridge.Parent=LocalPlayer
 runtime.RegisterReset(function()
     if not runtimeAlive then bridge:Destroy() end
 end)
-end)()
+end,"Part at line 778")
 
 -- Shared trade-window state. When a trade is open the game builds (and rebuilds, every
 -- time an item is added) a huge list of item frames; the GUI watchers below check this
 -- flag first and skip that flood entirely instead of inspecting every new frame.
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local trade={active=false,roots={},listeners={}}
 runtime.Trade=trade
@@ -930,11 +944,11 @@ end
 pcall(watchGui)
 LocalPlayer.ChildAdded:Connect(function(child) if child:IsA("PlayerGui") then pcall(watchGui) end end)
 pcall(scan)
-end)()
+end,"Part at line 801")
 
 -- Small performance log: how much time the add-on's GUI work took in the last 30 seconds
 -- and the longest frame in that time, so a freeze can be told apart from the game's own lag.
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local BUCKET=10
 local buckets={}
@@ -1005,7 +1019,7 @@ connection=RunService.Heartbeat:Connect(function(dt)
         if dt>0.1 then boot.slow=boot.slow+1 end
     end
 end)
-end)()
+end,"Part at line 951")
 
 
 pcall(function()
@@ -1052,7 +1066,7 @@ end)
 local player = LocalPlayer
 local camera = workspace.CurrentCamera
 
-;(function()
+;vv2Section(function()
     local hatSection = mainTab:AddSection("Chinese Hat", "Cosmetic")
 
     local hatEnabled = C("hatEnabled", false)
@@ -1290,9 +1304,9 @@ local camera = workspace.CurrentCamera
             end
         end)
     end
-end)()
+end,"Section \"Chinese Hat\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Multi Hat Giver","Cosmetic")
 local enabled=C("multiHatEnabled",false)
 local names={"None","Dominus Astra","Valkyrie","Clockwork","Extreme Headphones","Fiery Horns","Frozen Horns","Poisoned Horns","Custom"}
@@ -1395,9 +1409,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 if enabled then task.defer(refresh) end
-end)()
+end,"Section \"Multi Hat Giver\"")
 
-;(function()
+;vv2Section(function()
 local table_insert = table.insert
 
 local Maid = {}
@@ -2704,10 +2718,12 @@ resetSection = function()
     for _, slot in ipairs(customSlots) do customAnims[slot.key] = "" end
 end
 if enabled() then task.defer(refreshRuntime) end
-end)()
+end,"Section \"FE Animations\"")
 
+local trailEnabled,createTrail
+;vv2Section(function()
 local trailSection = mainTab:AddSection("Trail", "Cosmetic")
-local trailEnabled = C("trailEnabled", false)
+trailEnabled = C("trailEnabled", false)
 local trailIsGradient = C("trailIsGradient", false)
 local trailRainbow = C("trailRainbow", false)
 local trailColorStatic = C("trailColorStatic",Color3.fromRGB(38,38,38))
@@ -2757,7 +2773,7 @@ local function updateTrail()
     end
 end
 
-local function createTrail()
+function createTrail()
     removeTrail()
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -2851,12 +2867,15 @@ env.VisualsV2Runtime.RegisterReset(function()
     if trailConnection then trailConnection:Disconnect(); trailConnection = nil end
     removeTrail()
 end)
+end,"Section \"Trail\"")
 
+local ffEnabled,skinTrailEnabled,applyForceField,refreshForceFieldConnection,applySkinTrail,refreshSkinTrailRainbowConnection
+;vv2Section(function()
 local skinSection = mainTab:AddSection("Skin", "Cosmetic")
-local ffEnabled = C("ffEnabled", false)
+ffEnabled = C("ffEnabled", false)
 local ffRainbow = C("ffRainbow", false)
 local ffColor = C("ffColor",Color3.fromRGB(38,38,38))
-local skinTrailEnabled = C("skinTrailEnabled", false)
+skinTrailEnabled = C("skinTrailEnabled", false)
 local skinTrailRainbow = C("skinTrailRainbow", false)
 local skinTrailColor = C("skinTrailColor",Color3.fromRGB(38,38,38))
 local skinTrailLife = math.max(0.2, tonumber(C("skinTrailLife", 0.5)) or 0.5)
@@ -2921,7 +2940,7 @@ local function restoreForceFieldPart(part)
     part:SetAttribute(FF_COLOR_ATTR, nil)
 end
 
-local function applyForceField()
+function applyForceField()
     local char = player.Character
     if not char then return end
     local color = ffRainbow and Color3.fromHSV((os.clock() % 5) / 5, 1, 1) or ffColor
@@ -2947,7 +2966,7 @@ local function removeForceField()
     end
 end
 
-local function refreshForceFieldConnection()
+function refreshForceFieldConnection()
     if ffConnection then
         ffConnection:Disconnect()
         ffConnection = nil
@@ -2977,7 +2996,7 @@ local function currentSkinTrailTransparency()
     return math.clamp((tonumber(skinTrailTransparency) or 0) / 4, 0, 0.75)
 end
 
-local function applySkinTrail()
+function applySkinTrail()
     clearSkinTrail()
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -3030,7 +3049,7 @@ local function updateSkinTrailColor()
     end
 end
 
-local function refreshSkinTrailRainbowConnection()
+function refreshSkinTrailRainbowConnection()
     if skinTrailRainbowConnection then
         skinTrailRainbowConnection:Disconnect()
         skinTrailRainbowConnection = nil
@@ -3106,9 +3125,12 @@ env.VisualsV2Runtime.RegisterReset(function()
     removeForceField()
     clearSkinTrail()
 end)
+end,"Section \"Skin\"")
 
+local auraEnabled,applyAura
+;vv2Section(function()
 local auraSection = mainTab:AddSection("Auras", "Cosmetic")
-local auraEnabled = C("auraEnabled", false)
+auraEnabled = C("auraEnabled", false)
 local auraType = C("auraType", "Godly")
 local currentAuraModel = nil
 local auraEffects = {}
@@ -3192,7 +3214,7 @@ local function visualEffectsOnlyAuraClone(char)
     tempModel:Destroy()
 end
 
-local function applyAura()
+function applyAura()
     clearAura()
     local char = player.Character
     if not char then return end
@@ -3226,8 +3248,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     auraToggle:Set(false)
     clearAura()
 end)
+end,"Section \"Auras\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Dual Effect","Cosmetic")
 section:AddLabel("Must Own Dual Effect + Selected Effect")
 local effects={"Vampiric2024","SynthEffect2025","Sunbeams2024","Snowstorm2024","Retro2025","Radioactive","Musical","Heatwave2025","Heartify","Gifts2024","Ghosts2024","Ghostify","FlamingoEffect2025","Burn","Cursed2024","Coal2025","Starry2024","Bats2024","Aquatic2025","Treats2025","Confetti2025","Bokeh2025","Lights2025","Jellyfish2024","Hearts26","XmasGlow2025","Cats2025","Carrots2025","BlueFire","Rainbows2025","Nightsky2025","Frost2025","Elitify","Electric","Dual","Abduction2025","SweetEffect26","UFOs2025","Strawberries26","Snowballs2025","Nightlife26","Leaves2025"}
@@ -3257,8 +3280,10 @@ addDropdown(section,"VV2 Select Second Effect",effects,selected,function(v) sele
 local toggle=addToggle(section,"VV2 Auto Equip Dual Effect",enabled,function(v) enabled=v; SetCfg("dualEffectEnabled",v); hook() end)
 env.VisualsV2Runtime.RegisterReset(function() toggle:Set(false); enabled=false; stop() end)
 if enabled then hook() end
-end)()
+end,"Section \"Dual Effect\"")
 
+local setupJumpCircles
+;vv2Section(function()
 local jumpSection = mainTab:AddSection("Jump Circles", "Cosmetic")
 local jumpCirclesEnabled = C("jumpCirclesEnabled", false)
 local jumpCircleRainbow = C("jumpCircleRainbow", false)
@@ -3303,7 +3328,7 @@ local function createJumpCircle(position)
     end)
 end
 
-local function setupJumpCircles(char)
+function setupJumpCircles(char)
     task.spawn(function()
         local humanoid = char:WaitForChild("Humanoid", 5)
         local hrp = char:WaitForChild("HumanoidRootPart", 5)
@@ -3364,10 +3389,13 @@ env.VisualsV2Runtime.RegisterReset(function()
     jumpCircleLifetime = 0.8
     jumpCircleColor = Color3.fromRGB(255,255,255)
 end)
+end,"Section \"Jump Circles\"")
 
-local characterSection = mainTab:AddSection("Character", "Cosmetic")
-local headlessEnabled = C("headlessEnabled", false)
-local characterOriginal = setmetatable({}, {__mode = "k"})
+local characterSection,headlessEnabled,characterOriginal,applyCharacterVisuals,headlessToggle,KorbloxSystem
+;vv2Section(function()
+characterSection = mainTab:AddSection("Character", "Cosmetic")
+headlessEnabled = C("headlessEnabled", false)
+characterOriginal = setmetatable({}, {__mode = "k"})
 
 characterSection:AddParagraph(
     "Character Appearance",
@@ -3397,7 +3425,7 @@ local function restoreCharacterObject(obj)
     end
 end
 
-local function applyCharacterVisuals()
+function applyCharacterVisuals()
     local char = player.Character
     if not char then return end
 
@@ -3424,20 +3452,21 @@ local function applyCharacterVisuals()
     end
 end
 
-local headlessToggle = addToggle(characterSection, "Headless", headlessEnabled, function(state)
+headlessToggle = addToggle(characterSection, "Headless", headlessEnabled, function(state)
     headlessEnabled = state
     SetCfg("headlessEnabled", state)
     applyCharacterVisuals()
 end)
 
-local KorbloxSystem={
+KorbloxSystem={
     RightEnabled=C("korbloxEnabled",false),
     LeftEnabled=C("korbloxLeftEnabled",false),
     RightToggle=nil,
     LeftToggle=nil,
 }
+end,"Section \"Character\"")
 
-;(function()
+;vv2Section(function()
 
 local PlayersService=game:GetService("Players")
 
@@ -4097,12 +4126,12 @@ KorbloxSystem.LeftToggle=addToggle(
         end
     end
 )
-end)()
+end,"Part at line 3469")
 
 local noInterruptionEmote=C("noInterruptionEmote",false)
 local setupAutomaticEmoteProtection
 
-;(function()
+;vv2Section(function()
 
 local DEBUG=false
 
@@ -4605,9 +4634,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     noInterruptionEmote=false
     teardown()
 end)
-end)()
+end,"Part at line 4134")
 
-;(function()
+;vv2Section(function()
 -- Visual Avatar: another Roblox account's avatar in place of yours, on your screen. A copy
 -- of their whole avatar (body, size and proportions, skin, face, clothing, hair and every
 -- accessory) follows your character every frame and copies your every pose (each of its
@@ -5153,7 +5182,7 @@ runtime.RegisterReset(function()
         table.clear(templates)
     end
 end)
-end)()
+end,"Section \"Visual Avatar\"")
 
 -- Big buttons (Speed Glitch, Trick Shoot): ODH's big-button design from the add-on
 -- template (white, 90% see-through, Jura text, rounded corners and the turning gradient
@@ -5164,7 +5193,7 @@ end)()
 -- darker. Each big button
 -- keeps its saved spot and follows Lock Big Button POS in Miscellaneous. Each section's
 -- Hide Button Text hides the words on its buttons.
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local GRADIENT=ColorSequence.new({
     ColorSequenceKeypoint.new(0,Color3.new(0.0784314,0.0784314,0.0784314)),
@@ -5966,8 +5995,10 @@ runtime.RegisterReset(function()
     if runtimeAlive then return end
     for _,record in pairs(buttons) do pcall(record.Destroy) end
 end)
-end)()
+end,"Part at line 5196")
 
+local lockBigButtonPos,lockBindButtonPos,speedButton,BIG_BUTTON_DEFAULT,BIND_BUTTON_DEFAULT,loadStoredPosition,saveStoredPosition,BindableButtons,setupSpeedButtons
+;vv2Section(function()
 local speedSection = mainTab:AddSection("Speed Glitch", "Utilities")
 speedSection:AddParagraph(
     "Speed Glitch",
@@ -5981,13 +6012,13 @@ local speedButtonVisible = C("speedButtonVisible", false)
 local speedButtonWidth = math.clamp(tonumber(C("speedBigButtonSize", 140)) or 140, 50, 300)
 local speedBindButtonVisible = C("speedBindButtonVisible", false)
 local speedBindButtonSize = math.clamp(tonumber(C("speedBindButtonSize", 5)) or 5, 1, 10)
-local lockBigButtonPos = C("lockBigButtonPos", false)
-local lockBindButtonPos = C("lockBindButtonPos", false)
-local speedGui, speedButton, speedToggle
-local BIG_BUTTON_DEFAULT = UDim2.new(0.5, 0, 0.5, 0)
-local BIND_BUTTON_DEFAULT = UDim2.new(0.10, 0, 0.90, 0)
+lockBigButtonPos = C("lockBigButtonPos", false)
+lockBindButtonPos = C("lockBindButtonPos", false)
+local speedGui, speedToggle
+BIG_BUTTON_DEFAULT = UDim2.new(0.5, 0, 0.5, 0)
+BIND_BUTTON_DEFAULT = UDim2.new(0.10, 0, 0.90, 0)
 
-local function loadStoredPosition(key, fallback)
+function loadStoredPosition(key, fallback)
     local data = C(key, nil)
     if type(data) ~= "table" then
         SetCfg(key, {
@@ -6006,7 +6037,7 @@ local function loadStoredPosition(key, fallback)
     )
 end
 
-local function saveStoredPosition(key, pos)
+function saveStoredPosition(key, pos)
     SetCfg(key, {
         xs = pos.X.Scale,
         xo = pos.X.Offset,
@@ -6015,7 +6046,7 @@ local function saveStoredPosition(key, pos)
     })
 end
 
-local BindableButtons = (function()
+BindableButtons = (function()
     local buttons = {Buttons={}, Maids={}, Locked={}, Callbacks={}, Count=0}
     local shapes = {
         [0] = "rbxassetid://86221076925479",
@@ -6295,7 +6326,7 @@ end
 
 -- The buttons are made once: they live in screens that stay through a respawn, so they
 -- are no longer rebuilt (with fresh input handlers each time) on every new character.
-local function setupSpeedButtons()
+function setupSpeedButtons()
     if speedGui and speedGui.Alive() and BindableButtons.Buttons["VisualsV2_SpeedBind"]
         and BindableButtons.Buttons["VisualsV2_SpeedBind"].Parent then
         updateSpeedButtonStyle()
@@ -6442,9 +6473,10 @@ env.VisualsV2Runtime.RegisterReset(function()
     BindableButtons:SetLocked("VisualsV2_SpeedBind",false)
     updateSpeedButtonStyle()
 end)
+end,"Section \"Speed Glitch\"")
 
 
-;(function()
+;vv2Section(function()
 local shared = odh_shared_plugins
 
 local Players = game:GetService("Players")
@@ -6724,8 +6756,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     playerAddedConnection:Disconnect()
     playerRemovingConnection:Disconnect()
 end)
-end)()
+end,"Section \"Anti-Aim Extension\"")
 
+;vv2Section(function()
 local espSection = mainTab:AddSection("Distance ESP", "Utilities")
 local distanceEspEnabled = C("distanceEspEnabled", false)
 local distanceRenderDistance = C("distanceRenderDistance", 200)
@@ -6862,8 +6895,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     distancePosition="Bottom"
     clearDistanceEsp()
 end)
+end,"Section \"Distance ESP\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Shoot Murderer Button","Utilities")
 local customEnabled=C("shootCustomizationEnabled",false)
 local buttonWidth=C("shootButtonWidth",100)
@@ -7419,9 +7453,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     buttonWidth=100; buttonHeight=40; buttonPos=UDim2.new(0.5,0,0.5,0)
     stopKeeper(); restoreOriginal()
 end)
-end)()
+end,"Section \"Shoot Murderer Button\"")
 
-;(function()
+;vv2Section(function()
 -- Trick Shoot (Better ODH's Flick Shoot): turns your character (never the camera) to the
 -- murderer with a flick or a full 360, then shoots the way the clutches do, with ODH's Shoot
 -- Murderer button. Nothing is equipped afterwards.
@@ -8057,8 +8091,8 @@ runtime.RegisterReset(function()
         else button.Destroy() end
     end
 end)
-end)()
-;(function()
+end,"Section \"Trick Shoot\"")
+;vv2Section(function()
 -- VV2 Wall Hop: Better ODH's Wallhop (B6O6S), the same as it is there. Jumping with your
 -- face to a wall (within 3 studs in front of you) turns you off it for a moment as you jump,
 -- so you hop up it; with Back To Normal position after jump on, you're turned the way picked
@@ -8150,8 +8184,8 @@ runtime.RegisterReset(function()
     pcall(function() directionDropdown:Select("Back") end)
     if not runtimeAlive then jumpConnection:Disconnect() end
 end)
-end)()
-;(function()
+end,"Section \"VV2 Wall Hop\"")
+;vv2Section(function()
 -- Reset Character: resets your own character the way the game's own reset does (your
 -- character dies and you respawn), from its bindable button (the same circle as Bomb Jump
 -- Clutch's, the same size as its BJ button, saying R) or its keybind. A second press within a
@@ -8243,9 +8277,9 @@ runtime.RegisterReset(function()
     state.bindVisible=false;state.keybindOn=false
     setBindWanted(false)
 end)
-end)()
+end,"Section \"Reset Character\"")
 
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local Workspace,LocalPlayer=workspace,player
 local presets={"ForceField","Flat","Chromatic"}
@@ -8828,9 +8862,9 @@ runtime.RegisterReset(function()
     stopWatching()
     resetting=false
 end)
-end)()
+end,"Part at line 8282")
 
-;(function()
+;vv2Section(function()
 -- Tool and weapon outlines (the Outline of the Tool Chams add-on): a solid-colour edge
 -- around a tool, with a thickness you can set, while the tool itself still shows as it is.
 -- A thicker coloured copy of the tool is drawn just behind it (pushed away from the camera
@@ -9041,9 +9075,9 @@ runtime.RegisterReset(function()
     end
     refresh()
 end)
-end)()
+end,"Part at line 8867")
 
-;(function()
+;vv2Section(function()
 local scopeOnly=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
 local data={weapons={Gun={},Knife={}},effects={},effectInfo={},pets={},deathEffects={},metadata={Gun={},Knife={},Effects={},Pets={}},gunBehavior={}}
 local scopeMeshes={["15374602183"]=true,["15374679651"]=true,["79692502167966"]=true}
@@ -9401,9 +9435,9 @@ env.VisualsV2Runtime.OriginalVisuals={
 env.VisualsV2Runtime.RegisterReset(function()
     if not runtimeAlive then alive=false;cache:Destroy();table.clear(built);table.clear(weaponUse) end
 end)
-end)()
+end,"Part at line 9080")
 
-;(function()
+;vv2Section(function()
 local mmv=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
 local MARKER="VisualsV2_ClientWeaponSkin"
 local NONE="None"
@@ -12162,11 +12196,11 @@ env.VisualsV2Runtime.RegisterReset(function()
 end)
 bindContainers()
 updateWatching()
-end)()
+end,"Part at line 9440")
 
 
 
-;(function()
+;vv2Section(function()
 local effectList={
     {id="Abduction2025",name="Abduction",label="Abduction (2025)"},
     {id="Aquatic2025",name="Aquatic",label="Aquatic (2025)"},
@@ -12660,9 +12694,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 refresh()
-end)()
+end,"Part at line 12203")
 
-;(function()
+;vv2Section(function()
 -- Death effects: when you kill someone while a visual knife effect is chosen, their body
 -- gets that effect's death effect (its particles, fire and sound, body colour, hat or the
 -- pieces flying off) instead of your real effect's. Only on your screen. Effects without
@@ -12908,9 +12942,9 @@ runtime.RegisterReset(function()
         table.clear(playerConnections)
     end
 end)
-end)()
+end,"Part at line 12699")
 
-;(function()
+;vv2Section(function()
 local effects=env.VisualsV2Runtime.ClientKnifeEffects
 local originals=env.VisualsV2Runtime.OriginalVisuals
 local players=game:GetService("Players")
@@ -13047,10 +13081,10 @@ env.VisualsV2Runtime.RegisterReset(function()
         for _,list in pairs(characterConnections) do for _,connection in ipairs(list) do connection:Disconnect() end end
     end
 end)
-end)()
+end,"Part at line 12947")
 
 
-;(function()
+;vv2Section(function()
 local mmv=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
 local originals=env.VisualsV2Runtime.OriginalVisuals
 local enabled=not mmv and C("vv2PetsEnabled",false)
@@ -13241,10 +13275,10 @@ env.VisualsV2Runtime.RegisterReset(function()
     if not runtimeAlive then alive=false;for _,connection in ipairs(connections) do connection:Disconnect() end end
 end)
 refresh()
-end)()
+end,"Part at line 13087")
 
 
-;(function()
+;vv2Section(function()
 local skins=env.VisualsV2Runtime.ClientWeaponSkins
 local originals=env.VisualsV2Runtime.OriginalVisuals
 local alive=true
@@ -13918,10 +13952,10 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 update()
-end)()
+end,"Part at line 13281")
 
 
-;(function()
+;vv2Section(function()
 local skins=env.VisualsV2Runtime.ClientWeaponSkins
 local originals=env.VisualsV2Runtime.OriginalVisuals
 local alive=true
@@ -14300,13 +14334,13 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 updateActive()
-end)()
+end,"Part at line 13958")
 
 
 
 
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Visual Weapons/Effects","Cosmetic")
 local skins=env.VisualsV2Runtime.ClientWeaponSkins
 local effects=env.VisualsV2Runtime.ClientKnifeEffects
@@ -15527,12 +15561,12 @@ env.VisualsV2Runtime.RegisterReset(function()
 end)
 readNativeData()
 bindGui()
-end)()
+end,"Section \"Visual Weapons/Effects\"")
 
 
 
 
-;(function()
+;vv2Section(function()
 local runtime=env.VisualsV2Runtime
 local function path(object)
     if not object then return nil end
@@ -15795,10 +15829,10 @@ runtime.SaveWeaponDiagnostics=function()
     pcall(shared.Notify,"Could not save the weapon report: file writing and clipboard access are unavailable.",1)
     return false,"File writing and clipboard access are unavailable"
 end
-end)()
+end,"Part at line 15569")
 
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Shift Lock & Throwables","Utilities")
 local GuiService=game:GetService("GuiService")
 local mouse=player:GetMouse()
@@ -16399,9 +16433,9 @@ if aimEnabled then
     end
 end
 refresh()
-end)()
+end,"Section \"Shift Lock & Throwables\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Custom Knife/Gun","Visuals")
 local legacyEnabled=C("gunsVisualEnabled",false)
 local legacyColor=C("gunsTintColor",Color3.fromRGB(38,38,38))
@@ -16590,9 +16624,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 task.defer(refresh)
-end)()
+end,"Section \"Custom Knife/Gun\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Gun+","Utilities")
 local blockAnimations=C("gunPlusBlockAnimations",false)
 local equipSound=C("gunPlusEquipSound",false)
@@ -16780,9 +16814,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     removeForceFields(); restoreFireColors()
     for char,sound in pairs(sounds) do pcall(function() sound:Stop(); sound:Destroy() end); sounds[char]=nil end
 end)
-end)()
+end,"Section \"Gun+\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Estimated Server Pos","Visuals")
 local enabled=C("serverPosEnabled",false)
 local markerColor=C("serverPosColor",Color3.fromRGB(38,38,38))
@@ -16851,9 +16885,9 @@ end)
 env.VisualsV2Runtime.RegisterReset(function()
     enableToggle:Set(false); enabled=false; transparency=2.5; markerColor=Color3.fromRGB(255,255,255); disable()
 end)
-end)()
+end,"Section \"Estimated Server Pos\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Custom Tool","Visuals")
 section:AddParagraph("Tool Tint","Applies a configurable highlight tint to tools other than Gun and Knife.")
 
@@ -17007,9 +17041,9 @@ env.VisualsV2Runtime.RegisterReset(function()
         table.clear(tintConnections)
     end
 end)
-end)()
+end,"Section \"Custom Tool\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Custom Chat","Visuals")
 local enabled=C("chatColorEnabled",false)
 local bubbleColor=C("chatBubbleColor",Color3.fromRGB(0,0,0))
@@ -17056,9 +17090,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     if childConn then childConn:Disconnect(); childConn=nil end
     restore()
 end)
-end)()
+end,"Section \"Custom Chat\"")
 
-;(function()
+;vv2Section(function()
 local fontSection=mainTab:AddSection("Text Fonts","Visuals")
 local privacySection=mainTab:AddSection("Streamer Mode","Privacy")
 local fonts={
@@ -17514,10 +17548,10 @@ env.VisualsV2Runtime.RegisterReset(function()
     refresh()
 end)
 refresh()
-end)()
+end,"Section \"Text Fonts / Streamer Mode\"")
 
 
-;(function()
+;vv2Section(function()
 local pending={}
 local runtime=env.VisualsV2Runtime
 local stats={equips=0,shots=0}
@@ -17649,9 +17683,9 @@ task.spawn(function()
     end
 end)
 runtime.RegisterReset(function() table.clear(pending) end)
-end)()
+end,"Part at line 17554")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Customization","Visuals")
 local pg=player:WaitForChild("PlayerGui")
 local motion=C("vv2MotionBlur",false)
@@ -17758,9 +17792,9 @@ env.VisualsV2Runtime.RegisterReset(function()
 end)
 if toolTrans then task.defer(allTools) end
 if hideControls then hideLoop() end
-end)()
+end,"Section \"Customization\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Visual Stat Spoofer","Visuals")
 local pg=player:WaitForChild("PlayerGui")
 local enabled=C("visualStatSpooferEnabled",false)
@@ -17816,9 +17850,9 @@ task.spawn(function()
     end
 end)
 env.VisualsV2Runtime.RegisterReset(function() toggle:Set(false); enabled=false; alive=false end)
-end)()
+end,"Section \"Visual Stat Spoofer\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Coins","Utilities")
 local enabled=C("coinAuraEnabled",false)
 local savedRadius=tonumber(C("coinAuraRadius",8)) or 8
@@ -18092,9 +18126,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     esp.color=Color3.fromRGB(255,255,255)
     refreshEsp();refreshColor()
 end)
-end)()
+end,"Section \"Coins\"")
 
-;(function()
+;vv2Section(function()
 local alive=true
 local pending={}
 local vv2Features={}
@@ -19599,9 +19633,9 @@ runtime.RegisterReset(function()
     end
     vv2Features.Close()
 end)
-end)()
+end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 
-;(function()
+;vv2Section(function()
 -- Bomb Fling (Fun Bomb by lzzzx, reworked): flings players with your deployed Fake Bomb.
 -- Changes from Fun Bomb:
 --  * no freeze when a fling starts: bombs are tracked as they appear instead of searching
@@ -20348,9 +20382,9 @@ runtime.RegisterReset(function()
         table.clear(recentParts)
     end
 end)
-end)()
+end,"Section \"Bomb Fling\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Firefly Clutch","Utilities")
 local equipGunAfterClutch=C("fireflyEquipGun",false)
 local shootAfterClutch=C("fireflyShootMurderer",false)
@@ -20840,9 +20874,9 @@ buildTimer()
 if autoClutch then
     hookTool()
 end
-end)()
+end,"Section \"Firefly Clutch\"")
 
-;(function()
+;vv2Section(function()
 -- Firefly Protection (from civil's shield and the Firefly Shield add-on): the fireflies of
 -- your Firefly Jar are moved to where an attack would come from, locked to your body as
 -- you move (placed after every physics step and again just before the frame is drawn,
@@ -21032,11 +21066,12 @@ function MMV_OWN.shieldDistance()
 end
 -- MM2's Knife Interception: Interception Distance (studs) is where it stops a knife, how far
 -- out along the knife's path from the one it's at its furthest row goes (3 to 25, starting at
--- 5; never past the knife itself). (Knives are seen from 60 studs, further past 14.)
+-- 5; never past the knife itself), shown round you as a thin forcefield wall with Show
+-- Interception Area (its colour and transparency, 1 to 10, your own). (Knives are seen from 60
+-- studs, further past 14.)
 local INTERCEPT_STUDS=14
 -- Interception Area (studs): Knife Interception guards everyone within that many studs of you,
--- you among them (3 to 25, starting at 10), the area shown round you as a ring with Show
--- Interception Area (its colour and transparency, 1 to 10, your own)
+-- you among them (3 to 25, starting at 10)
 local AREA_MIN,AREA_MAX,AREA_START=3,25,10
 local settings={
     shield=MMV_OWN.toggle("shield"),
@@ -21303,10 +21338,17 @@ local function bombThrowing()
     for _,slot in ipairs(SLOTS) do if slot.deploying then return true end end
     return false
 end
--- (a part one of the other bombs has, or had)
+-- (a part one of the other bombs has, or had, or one that turned up while another bomb was being
+-- thrown: that one's. Bombs are thrown one at a time, each until it's found, so a Gold Bomb
+-- landing is never taken for the Fake Bomb, nor the other way round)
+local appeared=setmetatable({}, {__mode="k"})
 local function otherBomb(slot,part)
     for _,other in ipairs(SLOTS) do
-        if other~=slot and (other.part==part or other.last==part) then return true end
+        if other~=slot then
+            if other.part==part or other.last==part or other.found==part then return true end
+            local at=appeared[part]
+            if at and other.throwAt and at>=other.throwAt-0.05 then return true end
+        end
     end
     return false
 end
@@ -21355,7 +21397,7 @@ local function releaseBomb(slot)
         return
     end
     local part=slot.part
-    slot.part=nil;slot.pose=nil;slot.owned=nil;slot.notOursSince=nil
+    slot.part=nil;slot.pose=nil;slot.owned=nil;slot.notOursSince=nil;slot.guess=nil
     countBombs()
     if part then
         offsets[part]=nil;offsetAnchor[part]=nil;pinned[part]=nil
@@ -23430,7 +23472,7 @@ local function step(dt)
     -- (MM2: the Fake Bomb then put ahead of the fireflies, its broad side to the knife, still;
     -- MMV: every bomb out waiting where it would hit you, on its line, one just behind another)
     -- or (MMV) the shield is up (in its middle); once it's over, back over your head.
-    diagnostics.bombMode=nil;diagnostics.goldMode=nil
+    diagnostics.bombMode=nil;diagnostics.goldMode=nil;diagnostics.bombError=nil
     for index,slot in ipairs(bombs) do
         local part=slot.part
         local at,facing,snap=nil,nil,false
@@ -23605,7 +23647,10 @@ local function statusText()
     if not active() then return "Off" end
     -- (a bomb the game keeps to itself is still held, but then it only moves on your screen)
     local fakeText,goldText="",""
-    if fakeBomb.part then fakeText=" + Fake Bomb"..(fakeBomb.owned==false and " (only on your screen)" or "") end
+    if fakeBomb.part then
+        fakeText=" + Fake Bomb"..(fakeBomb.owned==false and " (only on your screen)" or "")
+            ..(fakeBomb.guess and (" (not sure it's the bomb: "..fakeBomb.guess..")") or "")
+    end
     local golds,screenOnly=0,false
     for _,slot in ipairs(goldBombs) do
         if slot.part then golds=golds+1;if slot.owned==false then screenOnly=true end end
@@ -23624,6 +23669,9 @@ local function statusText()
         if slotWanted(slot) and not slot.part and slot.why then goldWhy=slot.why;break end
     end
     if goldWhy then text=text.." | Gold Bomb: "..goldWhy end
+    -- (an error in throwing or finding the bombs, in moving them, or in the fireflies, in short)
+    local problem=diagnostics.helperError or diagnostics.bombError or diagnostics.error
+    if problem then text=text.." | Error: "..(tostring(problem):gsub("^[^\n:]*:(%d+): ","line %1: ")):sub(1,140) end
     return text
 end
 -- Use Fake Bomb As Particle Helper (and MMV's Use Gold Bomb As Particle Helper, the same way
@@ -23699,6 +23747,16 @@ local function bombTool(kit)
             end
         end
     end
+end
+-- (MMV: a bomb that looks more like the Gold Bomb toy than the Fake Bomb toy is never taken for
+-- the Fake Bomb; only once both toys' looks are known)
+local function goldLooking(part)
+    if not isMMV or not GOLD_KIT.signature or not FAKE_KIT.signature then return false end
+    local finder=runtime.ThrownBomb
+    if not finder or type(finder.Score)~="function" then return false end
+    local okGold,gold=pcall(finder.Score,part,GOLD_KIT.signature)
+    local okFake,fake=pcall(finder.Score,part,FAKE_KIT.signature)
+    return okGold and okFake and type(gold)=="number" and type(fake)=="number" and gold>fake
 end
 -- (which bomb a toy you're holding would be: the first of its bombs that isn't out)
 local function heldSlot(tool)
@@ -23880,7 +23938,14 @@ local function throwBomb(slot)
         end
     end
     local found=slot.found
-    if not found and slot.anyNew and slot.anyNew.Parent and not otherBomb(slot,slot.anyNew) then found=slot.anyNew end
+    -- (nothing that looks like the bomb: the new piece right where it was thrown, a guess, said so
+    -- in the status with what it is)
+    local guess=nil
+    if not found and slot.anyNew and slot.anyNew.Parent and not otherBomb(slot,slot.anyNew) then
+        found=slot.anyNew
+        pcall(function() local size=found.Size;guess=("%s %.1fx%.1fx%.1f"):format(found.Name,size.X,size.Y,size.Z) end)
+        guess=guess or "a new part"
+    end
     slot.found=nil;slot.anyNew=nil;slot.throwAt=nil
     if not found then
         local seen=finder and finder.lastSeen
@@ -23888,7 +23953,7 @@ local function throwBomb(slot)
     end
     -- (the toy ready again after its own wait)
     kit.readyAt=os.clock()+kit.cooldown
-    return wholeBomb(found),nil,thrownBy
+    return wholeBomb(found),nil,thrownBy,guess
 end
 -- a part that has just turned up in the map, while a bomb was just thrown (by the add-on, or
 -- by you with that toy in your hand)
@@ -24009,7 +24074,7 @@ local function slotStep(slot,now,character,inHand)
                 local ok,own=pcall(fling.NearestOwnedBomb,300)
                 if ok and typeof(own)=="Instance" and bombAlive(own) and not insideSomeone(own) then
                     own=wholeBomb(own)
-                    if own~=slot.part and not otherBomb(slot,own) then adoptBomb(slot,own) end
+                    if own~=slot.part and not otherBomb(slot,own) and not goldLooking(own) then adoptBomb(slot,own) end
                 end
             end
         end
@@ -24024,7 +24089,7 @@ local function slotStep(slot,now,character,inHand)
     if not root or not humanoid or humanoid.Health<=0 then bombWhy(slot,"no character");return end
     -- (as the MM2 murderer, protection is paused: the bomb is left alone, so Bomb Jump works)
     if murdererMe(root) then bombWhy(slot,"left alone while you're the murderer");return end
-    if clutchBusy() then return end
+    if clutchBusy() then bombWhy(slot,"waiting for Firefly Clutch");return end
     -- (the one out before, back from Bomb Fling or switched back on and still out: taken back;
     -- or the one Bomb Fling threw and still has out)
     if slot.last and bombAlive(slot.last) and not otherBomb(slot,slot.last) then adoptBomb(slot,slot.last);bombWhy(slot,nil);return end
@@ -24032,7 +24097,7 @@ local function slotStep(slot,now,character,inHand)
         local fling=runtime.BombFling
         if fling and type(fling.OwnBomb)=="function" then
             local ok,own=pcall(fling.OwnBomb)
-            if ok and typeof(own)=="Instance" and bombAlive(own) and not otherBomb(slot,own) then adoptBomb(slot,own);bombWhy(slot,nil);return end
+            if ok and typeof(own)=="Instance" and bombAlive(own) and not otherBomb(slot,own) and not goldLooking(own) then adoptBomb(slot,own);bombWhy(slot,nil);return end
         end
         -- (and any Fake Bomb that's yours to move, however it got there and however far off: one
         -- you threw yourself, or one of the add-on's the game has handed you after all)
@@ -24040,17 +24105,21 @@ local function slotStep(slot,now,character,inHand)
             local ok,own=pcall(fling.NearestOwnedBomb,300)
             if ok and typeof(own)=="Instance" and bombAlive(own) and not insideSomeone(own) then
                 own=wholeBomb(own)
-                if not otherBomb(slot,own) then adoptBomb(slot,own);bombWhy(slot,nil);return end
+                if not otherBomb(slot,own) and not goldLooking(own) then adoptBomb(slot,own);bombWhy(slot,nil);return end
             end
         end
     end
     if jarDueSoon() then bombWhy(slot,"waiting for the jar");return end
     if now<(kit.readyAt or 0) then
-        bombWhy(slot,("ready in %ds"):format(math.ceil(kit.readyAt-now)))
+        -- (after a try that brought nothing, why, until the next try)
+        local wait=math.ceil(kit.readyAt-now)
+        bombWhy(slot,slot.lastFail and ("trying again in %ds; last try: %s"):format(wait,slot.lastFail) or ("ready in %ds"):format(wait))
         return
     end
-    -- (one bomb thrown at a time)
-    if bombThrowing() then bombWhy(slot,"waiting for the other bomb");return end
+    -- (one bomb thrown at a time, each until it's found, so a bomb landing is always the right one's)
+    for _,other in ipairs(SLOTS) do
+        if other~=slot and (other.deploying or other.searching) then bombWhy(slot,"waiting for the other bomb");return end
+    end
     -- (Auto Get Tools fetching your toys or putting them in order: waited for, 3 s at most)
     local tools=runtime.AutoGetTools
     if tools and type(tools.Busy)=="function" then
@@ -24065,9 +24134,9 @@ local function slotStep(slot,now,character,inHand)
     -- (in your hand: thrown by you, it's kept)
     if holdingBomb then bombWhy(slot,"in your hand (throw it and it's kept)");return end
     slot.deploying=true
-    bombWhy(slot,"throwing it out")
+    bombWhy(slot,slot.lastFail and ("throwing it out again; last try: "..slot.lastFail) or "throwing it out")
     task.spawn(function()
-        local ok,part,reason,thrownBy=pcall(throwBomb,slot)
+        local ok,part,reason,thrownBy,guess=pcall(throwBomb,slot)
         slot.deploying=false;slot.searching=false
         slot.throwAt=nil
         local quick=slot.quick;slot.quick=nil
@@ -24084,14 +24153,20 @@ local function slotStep(slot,now,character,inHand)
         if ok and typeof(part)=="Instance" and bombAlive(part) and slotWanted(slot) and bombsActive() and runtimeAlive and not bombFlinging() then
             kit.failures=0
             if slot==fakeBomb then diagnostics.bombThrownBy=thrownBy else diagnostics.goldThrownBy=thrownBy end
+            slot.lastFail=nil
             adoptBomb(slot,part)
+            slot.guess=guess
             bombWhy(slot,nil)
         else
             kit.failures=(kit.failures or 0)+1
-            -- (thrown but not found, or not thrown: tried again soon, then every 6 s)
+            -- (thrown but not found, or not thrown: tried again soon, then every 6 s; why stays in
+            -- the status until a try works)
             local retry=os.clock()+math.min(6,2^(kit.failures-1))
             if (kit.readyAt or 0)<retry then kit.readyAt=retry end
-            bombWhy(slot,ok and tostring(reason or "no bomb") or tostring(part))
+            local why=ok and tostring(reason or "no bomb") or ("error: "..tostring(part))
+            if ok and typeof(part)=="Instance" then why="it was found, but it's gone or not needed any more" end
+            slot.lastFail=(thrownBy and (why.." (thrown by "..thrownBy..")") or why):sub(1,160)
+            bombWhy(slot,slot.lastFail)
         end
     end)
 end
@@ -24125,6 +24200,8 @@ local function watch()
                     local now=os.clock()
                     local ours=slot.throwAt~=nil and now-slot.throwAt<3
                     local yours=not ours and not slot.deploying and not slot.searching and slot.heldAt~=nil and now-slot.heldAt<3
+                    -- (when it turned up, while a bomb is being thrown: see otherBomb)
+                    if ours then appeared[object]=now end
                     if ours or yours then task.defer(helper.landed,slot,object,ours) end
                 end
             end
@@ -24158,9 +24235,11 @@ local function start()
     loop=RunService.Heartbeat:Connect(function(dt)
         if not runtimeAlive then return end
         pcall(sweep)
-        pcall(helper.step)
+        -- (an error in the bombs or the fireflies goes in the status, not only away silently)
+        local okBombs,bombProblem=pcall(helper.step)
+        diagnostics.helperError=not okBombs and tostring(bombProblem) or nil
         local ok,err=pcall(step,tonumber(dt) or 1/60)
-        if not ok then diagnostics.error=tostring(err) end
+        diagnostics.error=not ok and tostring(err) or nil
         if os.clock()-statusAt>0.5 then pcall(refreshClutchTimer) end
         if status and os.clock()-statusAt>0.5 then
             statusAt=os.clock()
@@ -24275,59 +24354,79 @@ local function refresh()
         autoLoop:Disconnect();autoLoop=nil
     end
 end
--- Show Interception Area (MM2): the circle Knife Interception guards, shown round you as a
--- ring (a low wall standing at your feet, its colour and transparency your own) while Knife
--- Interception is on. Only on your screen.
-local area={adornment=nil}
+-- Show Interception Area (MM2): a thin forcefield wall round you, as far out as the
+-- Interception Distance (where Knife Interception stops a knife at you), from your feet to over
+-- your head, its colour and transparency your own, while Knife Interception is on. Only on your
+-- screen: made on your side only, never solid, and never in the way of anything (the add-on's
+-- own checks for walls included). It goes with you every frame.
+local area={parts={},folder=nil,follow=nil,panels=64,height=6.5,thick=0.05}
 function area.wanted()
     return not isMMV and runtimeAlive and settings.intercept==true and settings.areaShow==true
 end
-function area.update()
-    if not area.wanted() then
-        if area.adornment then pcall(function() area.adornment:Destroy() end);area.adornment=nil end
-        return
-    end
+function area.clear()
+    if area.follow then area.follow:Disconnect();area.follow=nil end
+    if area.folder then pcall(function() area.folder:Destroy() end) end
+    area.folder=nil
+    table.clear(area.parts)
+end
+-- (round you, every frame: from your feet up, each panel turned to face out from you)
+function area.place()
     local root,character=myRoot()
-    if not root then return end
+    if not root or not area.folder or #area.parts==0 then return end
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
-    local ring=area.adornment
-    if not ring or not ring.Parent then
-        ring=Instance.new("CylinderHandleAdornment")
-        ring.Name="VisualsV2_InterceptionArea"
-        pcall(function() ring.AlwaysOnTop=false;ring.ZIndex=0 end)
-        -- (a ring if this Roblox can make one; else a flat circle on the ground)
-        area.hollow=pcall(function() ring.InnerRadius=0 end)
-        -- (gethui can hand back something that isn't an Instance on some executors (a string on
-        -- Delta), which stopped the rest of the add-on loading in MM2: only a real Instance is
-        -- used, else CoreGui, else the camera)
-        local parent=nil
-        local hidden=type(gethui)=="function" and gethui or env.gethui
-        if type(hidden)=="function" then
-            local ok,container=pcall(hidden)
-            if ok and typeof(container)=="Instance" then parent=container end
-        end
-        if not parent then pcall(function() parent=game:GetService("CoreGui") end) end
-        if not (parent and pcall(function() ring.Parent=parent end)) then
-            pcall(function() ring.Parent=workspace.CurrentCamera end)
-        end
-        area.adornment=ring
-    end
-    local radius=settings.interceptArea
-    -- (how far down your feet are from your middle)
     local drop=3
     pcall(function()
         if humanoid and humanoid.RigType==Enum.HumanoidRigType.R15 then drop=root.Size.Y/2+humanoid.HipHeight end
     end)
-    local height=area.hollow and 3 or 0.1
-    pcall(function()
-        ring.Adornee=root
-        ring.Radius=radius
-        if area.hollow then ring.InnerRadius=math.max(radius-0.15,0) end
-        ring.Height=height
-        ring.CFrame=CFrame.new(0,-drop+height/2,0)*CFrame.Angles(math.rad(90),0,0)
-        ring.Color3=settings.areaColor
-        ring.Transparency=math.clamp(settings.areaAlpha/10,0.1,0.95)
-    end)
+    local base=root.Position-Vector3.new(0,drop-area.height/2,0)
+    local radius=area.radius or settings.interceptStop
+    local cframes={}
+    for index=1,#area.parts do
+        local angle=(index-1)/#area.parts*2*math.pi
+        local out=Vector3.new(math.cos(angle),0,math.sin(angle))
+        local at=base+out*radius
+        cframes[index]=CFrame.lookAt(at,at+out)
+    end
+    if not pcall(function() workspace:BulkMoveTo(area.parts,cframes,Enum.BulkMoveMode.FireCFrameChanged) end) then
+        for index,panel in ipairs(area.parts) do pcall(function() panel.CFrame=cframes[index] end) end
+    end
+end
+function area.update()
+    if not area.wanted() then area.clear();return end
+    local root=myRoot()
+    if not root then return end
+    if not area.folder or not area.folder.Parent then
+        area.clear()
+        local folder=Instance.new("Folder")
+        folder.Name="VisualsV2_InterceptionBarrier"
+        for index=1,area.panels do
+            local panel=Instance.new("Part")
+            panel.Name="VisualsV2_InterceptionBarrier"
+            panel.Anchored=true
+            panel.CanCollide=false
+            pcall(function() panel.CanTouch=false;panel.CanQuery=false end)
+            panel.CastShadow=false
+            panel.Material=Enum.Material.ForceField
+            panel.Parent=folder
+            area.parts[index]=panel
+        end
+        if not pcall(function() folder.Parent=workspace.CurrentCamera end) then pcall(function() folder.Parent=workspace end) end
+        area.folder=folder
+        area.follow=RunService.RenderStepped:Connect(function() pcall(area.place) end)
+    end
+    -- (as far out as the Interception Distance, each panel just wide enough to meet the next)
+    local radius=settings.interceptStop
+    local width=2*radius*math.tan(math.pi/area.panels)+0.02
+    local alpha=math.clamp(settings.areaAlpha/10,0.1,0.95)
+    for _,panel in ipairs(area.parts) do
+        pcall(function()
+            panel.Size=Vector3.new(width,area.height,area.thick)
+            panel.Color=settings.areaColor
+            panel.Transparency=alpha
+        end)
+    end
+    area.radius=radius
+    pcall(area.place)
 end
 -- (kept up with you: after a respawn it's round your new character)
 task.spawn(function()
@@ -24441,6 +24540,7 @@ else
     -- (and where it stops a knife: this many studs out from whoever it's at)
     section:AddSlider("Interception Distance (studs)",3,25,settings.interceptStop,function(value)
         settings.interceptStop=math.clamp(tonumber(value) or 5,3,25);SetCfg("fireflyInterceptStop",settings.interceptStop)
+        pcall(area.update)
     end)
     controls.areaShow=addToggle(section,"Show Interception Area",settings.areaShow,function(value)
         settings.areaShow=value;SetCfg("fireflyInterceptAreaShow",value)
@@ -24578,9 +24678,9 @@ runtime.RegisterReset(function()
     end
 end)
 if active() then task.defer(refresh) end
-end)()
+end,"Section \"Firefly Protection\"")
 
-;(function()
+;vv2Section(function()
 -- GGsign Glide: holding the GGSign toy under a roof, you stick to it, spin, and move the way
 -- you walk. Smooth now: you are held a steady distance under the roof (no more bouncing
 -- into it), the spin keeps a fixed heading, and while gliding the camera follows a point
@@ -24738,9 +24838,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     spinSpeed,moveForce=DEFAULTS.spin,DEFAULTS.force
     setSlider(sliders.spin,spinSpeed);setSlider(sliders.force,moveForce)
 end)
-end)()
+end,"Section \"GGsign Glide\"")
 
-;(function()
+;vv2Section(function()
 local screenSection = mainTab:AddSection("Screen", "Visuals")
 local stretchScreenEnabled = C("stretchScreenEnabled", false)
 local STRETCH_FACTOR = 0.65
@@ -24769,9 +24869,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     stretchScreenEnabled = false
 end)
 
-end)()
+end,"Section \"Screen\"")
 
-;(function()
+;vv2Section(function()
 local worldSection=mainTab:AddSection("Environment","World")
 
 local savedFogStart=Lighting.FogStart
@@ -25107,9 +25207,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     fullbrightEnabled=false
     disableFullbright()
 end)
-end)()
+end,"Section \"Environment / Fog / Skyboxes\"")
 
-;(function()
+;vv2Section(function()
 -- Minecraftizer (by Gato): Minecraft-style textures on the map, by each part's material
 local Minecraftizer=mainTab:AddSection("Minecraftizer","World")
 
@@ -25321,9 +25421,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     toggle:Set(false)
     stop()
 end)
-end)()
+end,"Section \"Minecraftizer\"")
 
-;(function()
+;vv2Section(function()
 local section=mainTab:AddSection("Increase Inventory","Utilities")
 section:AddParagraph(
     "Increase Inventory",
@@ -26316,9 +26416,9 @@ env.VisualsV2Runtime.RegisterReset(function()
     disconnectAll(guiConnections)
     clearReferences()
 end)
-end)()
+end,"Section \"Increase Inventory\"")
 
-;(function()
+;vv2Section(function()
 local miscSection=mainTab:AddSection("Miscellaneous","Settings")
 local muteToggle=addToggle(miscSection,"Mute Button SFX",ButtonAudio.muted,function(value)
     ButtonAudio:SetMuted(value)
@@ -26404,7 +26504,7 @@ miscSection:AddButton("Restore Defaults",function()
     env.VisualsV2Runtime.RestoreDefaults()
     pcall(shared.Notify,"Visuals V2 is back to its defaults (settings file deleted). Re-execute it to start fresh.",4)
 end)
-end)()
+end,"Section \"Miscellaneous\"")
 
 local function onCharacterAdded(char)
     characterOriginal=setmetatable({}, {__mode="k"})
@@ -26412,27 +26512,34 @@ local function onCharacterAdded(char)
     if headlessEnabled then
         task.spawn(function()
             char:WaitForChild("Head",2)
-            if player.Character==char and headlessEnabled then
+            if player.Character==char and headlessEnabled and applyCharacterVisuals then
                 applyCharacterVisuals()
             end
         end)
     end
 
-    if KorbloxSystem.RightEnabled or KorbloxSystem.LeftEnabled then
+    if KorbloxSystem and (KorbloxSystem.RightEnabled or KorbloxSystem.LeftEnabled) then
         KorbloxSystem.Schedule(char)
     end
 
     task.delay(0.15,function()
         if player.Character~=char then return end
-        if trailEnabled then createTrail() end
-        if ffEnabled then applyForceField(); refreshForceFieldConnection() end
-        if skinTrailEnabled then applySkinTrail(); refreshSkinTrailRainbowConnection() end
-        if auraEnabled then applyAura() end
-        if noInterruptionEmote then setupAutomaticEmoteProtection(char) end
-        setupJumpCircles(char)
+        -- (each on its own: a section that didn't load, or one that runs into an error, doesn't
+        -- stop the others being put back on your new character; the error still goes to the console)
+        local function again(callback,...)
+            if type(callback)~="function" then return end
+            local ok,problem=pcall(callback,...)
+            if not ok then pcall(warn,"[Visuals V2] "..tostring(problem)) end
+        end
+        if trailEnabled then again(createTrail) end
+        if ffEnabled then again(applyForceField); again(refreshForceFieldConnection) end
+        if skinTrailEnabled then again(applySkinTrail); again(refreshSkinTrailRainbowConnection) end
+        if auraEnabled then again(applyAura) end
+        if noInterruptionEmote then again(setupAutomaticEmoteProtection,char) end
+        again(setupJumpCircles,char)
     end)
 
-    task.delay(0.5,setupSpeedButtons)
+    if type(setupSpeedButtons)=="function" then task.delay(0.5,setupSpeedButtons) end
 end
 if player.Character then task.defer(function() onCharacterAdded(player.Character) end) end
 player.CharacterAdded:Connect(onCharacterAdded)
@@ -26441,7 +26548,7 @@ saveConfig()
 
 local performanceTab=mainTab
 
-;(function()
+;vv2Section(function()
 local section=performanceTab:AddSection("FPS, Plyr, & Ping","Performance")
 local Stats=game:GetService("Stats")
 local enabled=C("vv2FpsPingEnabled",false)
@@ -26752,9 +26859,9 @@ env.VisualsV2Runtime.RegisterReset(function()
 end)
 
 if enabled then task.defer(create) end
-end)()
+end,"Section \"FPS, Plyr, & Ping\"")
 
-;(function()
+;vv2Section(function()
 local section=performanceTab:AddSection("Performance & Optimization","Performance")
 local P=game:GetService("Players")
 local originalMat,originalPart,originalTex,originalAcc,originalSky={},{},{},{},{}
@@ -26935,9 +27042,9 @@ section:AddButton("VV2 Reapply Weapon Displays",function()
 end)
 weaponDisplayToggle=add("weaponDisplays","VV2 Auto Remove Weapon Displays",setWeaponDisplays)
 env.VisualsV2Runtime.RegisterReset(function() for _,t in ipairs(toggles) do t:Set(false) end; setSmooth(false); setParticles(false); setMeshes(false); setTextures(false); setAccessories(false); setGray(false); setFrame(false); setWeaponDisplays(false) end)
-end)()
+end,"Section \"Performance & Optimization\"")
 
-;(function()
+;vv2Section(function()
 local section=performanceTab:AddSection("RTX & Graphics","Visuals")
 local Terrain=workspace:FindFirstChildOfClass("Terrain")
 local rtx=C("rtxEnabled",false); local timeOn=C("rtxTimeEnabled",false); local custom=C("rtxCustomEnabled",false)
@@ -26999,9 +27106,9 @@ section:AddSlider("VV2 SunRays Intensity",0,100,math.floor(sun*100),function(v) 
 section:AddSlider("VV2 Reflections Intensity",0,50,math.floor(refl*10),function(v) refl=v/10; SetCfg("rtxReflections",v); if custom or rtx then Lighting.EnvironmentSpecularScale=refl end end)
 env.VisualsV2Runtime.RegisterReset(function() rt:Set(false); tt:Set(false); ct:Set(false); rtx=false; timeOn=false; custom=false; clearTime(); clearCustom(); stopRTX() end)
 if rtx then task.defer(applyRTX) end; if timeOn then task.defer(applyTime) end; if custom then task.defer(applyCustom) end
-end)()
+end,"Section \"RTX & Graphics\"")
 
-;(function()
+;vv2Section(function()
 local sawSettingsFile=false
 -- Every setting back to how it starts: the saved settings and positions are dropped and
 -- each feature switches off and puts back what it changed.
@@ -27076,9 +27183,9 @@ task.spawn(function()
         task.wait(1)
     end
 end)
-end)()
+end,"Part at line 27111")
 
-;(function()
+;vv2Section(function()
 local creditsSection=mainTab:AddSection("Credits","")
 
 creditsSection:AddLabel("Belfor — 1306953439238164551")
@@ -27092,7 +27199,7 @@ creditsSection:AddLabel("arkineku — 1418738338508308691")
 creditsSection:AddLabel("anya_bts — 1067515726677684324")
 creditsSection:AddLabel("f9my — 1503044831994187977")
 creditsSection:AddLabel("drownedinherthoughts — 1311585769311178764")
-end)()
+end,"Section \"Credits\"")
 
 saveConfig()
 env.VisualsV2Runtime.ExecuteTime=os.clock()-bootStarted
