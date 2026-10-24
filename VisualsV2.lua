@@ -20553,7 +20553,11 @@ local flingQueue={}
 local flinging=false
 local lastMissingNotice=-math.huge
 -- (touched against their root and head every frame, as Reset Player (aux0on) does, so the hit
--- registers straight away)
+-- registers straight away; but not for the first TOUCH_DELAY seconds of a fling, or of a new bomb
+-- in one. In the test logs about one fling in 25 lost its bomb a quarter of a second in, always
+-- right at the start, the game removing it before it had even reached the target's screen; a
+-- touch told to the game while it still has the bomb lying by you may be what does it)
+local TOUCH_DELAY=0.2
 local touchInterest=firetouchinterest or env.firetouchinterest
 local function touch(a,b)
     if type(touchInterest)~="function" or not (a and b) then return end
@@ -20569,9 +20573,8 @@ local function measure(track,position,now)
     return now-first.at>=0.05 and (position-first.position)/(now-first.at) or Vector3.zero
 end
 -- Where a moving player will be, from their last second (PATH_TIME): round the arc if they're
--- turning steadily one way, as round a circle; if they're weaving, most of the way along to
--- straight on (WEAVE_ALONG) but halfway over to the middle of where they've been heading;
--- otherwise straight on. Tried in simulation on
+-- turning steadily one way, as round a circle; if they're weaving, halfway between straight on
+-- and the middle of where they've been heading; otherwise straight on. Tried in simulation on
 -- straight runs, circles, zig-zags and random turns, with the lead 0.12 s out either way and their
 -- position jittering 0.2 studs, they were touched 1.1 s in on average with 4% not touched in 4 s.
 -- Following every turn as if it went on (as the test before this did) took 3.3 s, with 62% not
@@ -20580,13 +20583,12 @@ end
 -- circling at 3 to 4 radians a second (as the test target did) turns further than the 1.4 it used
 -- to be in the time the bomb is ahead, and the bomb lagged behind them round the circle; at 2.2,
 -- simulation touched a 4 radians a second circle in about a second, and did no worse on straight
--- runs, zig-zags or random turns. Halfway along to straight on as well (as it was), weaving put
--- the bomb 2.6 to 3.2 studs behind the test target on its screen in all four sessions that logged
--- it, on them 11% of the time; three quarters of the way along it would have been 18%, with
--- simulated regular zig-zags touched in 1.2 s instead of 1.1 s (all the way: 18%, but 1.5 s).
+-- runs, zig-zags or random turns. (Weaving was led three quarters of the way along to straight on
+-- for one test, a replay of the logs having promised it on them 18% of the time against 11%; on
+-- the target's screen it moved half a stud and was on them no more often, so it's back halfway,
+-- as simulation prefers.)
 local PATH_TIME=1
 local ARC_LIMIT=2.2
-local WEAVE_ALONG=0.75
 -- Every other player's last MOTION_TIME seconds (where they were, which way they were going and
 -- how fast they were rising), kept all the time for the ones within FAR_AWAY studs, so a fling
 -- knows from its start whether they're weaving, turning or hopping (or still flying from the last
@@ -20797,13 +20799,7 @@ local function predictAhead(path,now,current,horizontal,lead)
     local straight=current+horizontal*lead
     if weaving(path,now) then
         local middle=middleAhead(path,now,current,lead)
-        if middle then
-            local forward=horizontal.Unit
-            local offset=middle-current
-            local along=offset:Dot(forward)
-            local reach=WEAVE_ALONG*horizontal.Magnitude*lead+(1-WEAVE_ALONG)*along
-            return current+forward*reach+(offset-forward*along)/2,"weave",0
-        end
+        if middle then return (straight+middle)/2,"weave",0 end
     end
     return straight,"straight",0
 end
@@ -20887,17 +20883,31 @@ local carryTest,nextCarryTest,carryFails=nil,0,0
 -- someone else moves only goes where the game sends it (your screen doesn't move it itself, as
 -- the test target's log showed: a bomb sent at 32768 studs a second stayed put on it between
 -- updates), so it doesn't rise. It's put back, stopped, after either way (so the push itself
--- isn't then taken for it moving).
+-- isn't then taken for it moving). One that didn't rise with nothing coming in for it from the
+-- game is stuck in something rather than someone else's (a bomb thrown by you, no one else within
+-- 80 studs, failed it for 22 s in a public server): it's tried again in the clear over you, and
+-- left there if it rises.
 local function pushYours(bomb)
     local ok,before=pcall(function() return bomb.CFrame end)
     if not ok then return false end
-    pcall(function() bomb.AssemblyLinearVelocity=Vector3.new(0,30,0) end)
-    for _=1,3 do RunService.Heartbeat:Wait() end
-    if not usable(bomb) then return false end
-    local moved=(bomb.Position-before.Position).Magnitude
-    local yours=moved>0.3 and receiveAge(bomb)<=0.03
+    local function rises(from)
+        pcall(function() bomb.AssemblyLinearVelocity=Vector3.new(0,30,0) end)
+        for _=1,3 do RunService.Heartbeat:Wait() end
+        if not usable(bomb) then return false end
+        return (bomb.Position-from.Position).Magnitude>0.3 and receiveAge(bomb)<=0.03
+    end
+    local yours=rises(before)
+    local restore=before
+    local mine=rootOf(LocalPlayer)
+    if not yours and usable(bomb) and receiveAge(bomb)<=0.03 and mine then
+        local clear=mine.CFrame*CFrame.new(0,6,0)
+        pcall(function() bomb.CFrame=clear;bomb.AssemblyLinearVelocity=Vector3.zero end)
+        RunService.Heartbeat:Wait()
+        yours=rises(clear)
+        if yours then restore=clear end
+    end
     pcall(function()
-        bomb.CFrame=before
+        bomb.CFrame=restore
         bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
     end)
     return yours
@@ -21000,6 +21010,7 @@ local function runFling(target)
     local previousLimit=nil
     pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
+    local touchFrom=started+TOUCH_DELAY
     local startY=targetRoot.Position.Y
     local hit=false
     local rotation,thickness=flatRotation(bomb)
@@ -21019,6 +21030,7 @@ local function runFling(target)
                 if not (another and watchYours(another,1.2)) then break end
                 bomb,verified=another,another
                 rotation,thickness=flatRotation(bomb)
+                touchFrom=os.clock()+TOUCH_DELAY
             end
             if not targetRoot.Parent or not aliveCharacter(target) then note(("GONE %s (died or left)"):format(label));break end
             -- (put there after each physics step, as Reset Player does)
@@ -21092,9 +21104,11 @@ local function runFling(target)
                 bomb.AssemblyAngularVelocity=Vector3.new(0,POWER,0)
             end)
             local head=target.Character and target.Character:FindFirstChild("Head")
-            for _=1,5 do
-                touch(bomb,targetRoot)
-                if head then touch(bomb,head) end
+            if now>=touchFrom then
+                for _=1,5 do
+                    touch(bomb,targetRoot)
+                    if head then touch(bomb,head) end
+                end
             end
             -- (for the report: where the bomb was put, from them as you see them, along the way
             -- they're moving, or the way they face standing still)
@@ -21426,7 +21440,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d lead=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,baseLead(),cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. START: spawned = seconds since their character turned up, ff=1 = it has a spawn ForceField. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: most of the way to straight on, halfway over to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. START: spawned = seconds since their character turned up, ff=1 = it has a spawn ForceField. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: halfway to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
