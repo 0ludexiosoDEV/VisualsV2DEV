@@ -19036,8 +19036,8 @@ end
 
 local function FastBombJump()
     if not alive or not runtimeAlive then return end
-    -- (Firefly Protection's Use Fake Bomb As Particle Helper keeps the Fake Bomb out: no Bomb Jump then,
-    -- except as the MM2 murderer, when protection is paused and the bomb left alone)
+    -- (Firefly Protection's Fake Bomb particle helper stopped Bomb Jump while it kept the bomb out;
+    -- neither game has that helper any more, so this no longer stops it)
     local protection = runtime.FireflyProtection
     if protection and type(protection.UsesFakeBomb) == "function" and protection.UsesFakeBomb() then
         failure("it's off while Firefly Protection uses the Fake Bomb as a particle helper", true)
@@ -19397,7 +19397,8 @@ end
 
 local function FastGoldBombJump()
     if not alive or not runtimeAlive then return end
-    -- (Firefly Protection's Use Gold Fake Bomb keeps the Gold Fake Bomb out: no Gold Bomb Jump then)
+    -- (Firefly Protection's Gold Bomb particle helper stopped Gold Bomb Jump while it kept the bomb
+    -- out; Firefly Protection isn't in MMV any more, so this no longer stops it)
     local protection = runtime.FireflyProtection
     if protection and type(protection.UsesGoldBomb) == "function" and protection.UsesGoldBomb() then
         failure("it's off while Firefly Protection uses the Gold Bomb as a particle helper", true)
@@ -20879,12 +20880,12 @@ end
 end,"Section \"Firefly Clutch\"")
 
 ;vv2Section(function()
--- Firefly Protection (from civil's shield and the Firefly Shield add-on): the fireflies of
--- your Firefly Jar are moved to where an attack would come from, locked to your body as
--- you move (placed after every physics step and again just before the frame is drawn,
--- carrying your speed, with the jar's own movers held off).
---  MM2 (Knife Shield (for yourself), Knife Interception (for teammates) and Hidden Knife
---  Interception (Least effective): one at a time)
+-- Firefly Protection (from civil's shield and the Firefly Shield add-on; MM2 only, MMV doesn't
+-- have it): the fireflies of your Firefly Jar are moved to where an attack would come from,
+-- locked to your body as you move (placed after every physics step and again just before the
+-- frame is drawn, carrying your speed, with the jar's own movers held off).
+--  MM2 (Knife Shield (for yourself), Knife Interception and Hidden Knife Interception (Least
+--  effective): one at a time)
 --  * Knife Shield: one murderer in sight, or hidden behind a wall but near: a rectangle of
 --    fireflies in front of you, facing them (raised or lowered to where they are). Hidden
 --    and far: the fireflies go round you. Several people with knives: they go round your
@@ -20901,17 +20902,14 @@ end,"Section \"Firefly Clutch\"")
 --  * Knives are stopped twice as far out from the body as they first were, for every mode
 --    (the Knife Shield's wall and the spot a knife would hit, the rows' nearest end, Hidden's
 --    fixed range).
---  * Knife Interception: a thrown knife coming at you, or at anyone within the Interception
---    Area (studs) of you (a circle round you, 3 to 25 studs, starting at 10; never the one with
---    the knife), gets every firefly along its path between it and them (on the path and either
---    side of it), in rows from the nearest stop out to where Interception Distance (studs) says
---    it's stopped (3 to 25, starting at 5; never past the knife itself; with nobody else in the
---    circle, just you); otherwise they circle you. Show Interception Area shows that circle
---    round you (its colour, and its transparency 1 to 10).
+--  * Knife Interception: a thrown knife coming at you, or at anyone within 6 studs of you
+--    (never the one with the knife), gets every firefly along its path between it and them (on
+--    the path and either side of it), in rows from the nearest stop out to 10 studs (never past
+--    the knife itself; with nobody else within 6 studs, just you); otherwise they circle you.
 --  * Hidden Knife Interception: the fireflies wait scattered high above you (20 to 30 studs
 --    up, drifting), so nobody sees them round you; a knife coming at you brings them all
 --    straight down across its path at a fixed range round you (the Firefly Distance out to
---    2.6 studs further; the Interception Area is Knife Interception's only),
+--    2.6 studs further; the 6 studs round you are Knife Interception's only),
 --    then back up. The rest of the time they stay up there: not while the murderer winds up
 --    a throw, nor when someone stands next to you.
 --    (A knife is followed only while it flies: once it has hit something, stopped, rides on
@@ -20924,72 +20922,29 @@ end,"Section \"Firefly Clutch\"")
 --    Wherever they go, a firefly is never put nearer another player than you: the game
 --    hands a loose part to the nearest player, and one handed to someone else stops nothing.
 --    (Up high, they're only brought in over your head for that, never down toward you.)
---  MMV
---  * Gun Shield: the original MMV shield (shield v13), a filled 5 x 5 square grid (here 0.52
---    apart), turned to face the sheriff/hero wherever they are (all round you, tilted up or
---    down to them, following them smoothly like MM2's Knife Shield) and held right against
---    your body on that side: Shield Distance studs off your body (front, back, sides and in
---    between alike), so no firefly is wasted far from you. Filled from the middle out as a
---    square; more than 25 make a second, staggered layer just behind it. Behind a wall and 80
---    studs or more away: the ring aura instead. A thrown knife at you: all onto the knife.
---    With the Fake Bomb out, the bomb is in the middle of the shield the whole time it's up
---    (see below), every firefly in a closed frame round it.
---  * Protect Against Murderer: the same shield turned to whoever has the knife, while they're
---    in sight or within 40 studs even behind a wall; with the Gun Shield on too, the murderer
---    comes first. It works with the bombs: only while Use Fake Bomb or Use Gold Bomb As
---    Particle Helper is on. A thrown knife at you, as above. The bombs out are in its middle.
---    (A disclaimer says it will ruin your performance as the murderer: the bombs and the jar
---    are equipped for a moment each time.)
---  Both (Firefly Ring Aura and Follow Mouse can be on together)
---  * Firefly Ring Aura: the fireflies circle you, each rising and falling (MM2: it also
---    makes the shield's fireflies swap places now and then). Off, they only circle you
---    standing by while a protection mode is on and someone who could hurt you is within 200
---    studs (MM2: never once you're dead and out in the lobby); with nothing to do otherwise
---    (the lobby, dead, nothing on but Auto Use Firefly Jar or a bomb) they wait high up over
---    you, hidden, as Hidden Knife Interception's do.
+--  Firefly Ring Aura and Follow Mouse (can be on together)
+--  * Firefly Ring Aura: the fireflies circle you, each rising and falling (it also makes the
+--    shield's fireflies swap places now and then). Off, they only circle you standing by
+--    while a protection mode is on and someone who could hurt you is within 200 studs (never
+--    once you're dead and out in the lobby); with nothing to do otherwise (the lobby, dead,
+--    nothing on but Auto Use Firefly Jar) they wait high up over you, hidden, as Hidden Knife
+--    Interception's do.
 --  * Follow Mouse: a tap on the screen (not a drag to turn the camera, not the joystick or
 --    jump button), a finger held still on it, or the mouse clicked / held and dragged: the
 --    fireflies swarm round that spot, up to 50 studs from you, and stay there until 4 s
 --    after the last tap or drag; then back as they were. Protection comes first: with a
---    protection mode on, only while it isn't needed (MM2: no murderer in sight or near;
---    MMV: the gun holder behind a wall and 80+ studs away).
+--    protection mode on, only while it isn't needed (no murderer in sight or near).
 --  * Auto Use Firefly Jar: uses the jar the moment its cooldown is over (the same 16 s
 --    as Firefly Clutch's timer; longer if the jar shows it needs longer), without the jar's
 --    animation, only while the fireflies are of use (a protection mode on and someone who
 --    could hurt you within 200 studs, the ring aura / follow mouse on, or the first 20 s
 --    after you spawn or the round starts), and puts back exactly what you were holding.
---    MM2: once the game won't let the jar be used during the round, you're told once and it
---    waits until the round is over.
+--    Once the game won't let the jar be used during the round, you're told once and it waits
+--    until the round is over.
 --    After a respawn or a teleport (the round starting or ending) it waits for Increase
 --    Inventory's Auto Get Tools to have every chosen toy in its slot, then goes at once,
 --    and has your toys put back in order after each use.
 --  * The jar's lid, while it's out, moves round with the fireflies as one of them.
---  * Use Fake Bomb As Particle Helper: your Fake Bomb taken out and thrown by itself
---    whenever none is out and it's ready (MM2: with its Remote right in front of your feet, the
---    way Bomb Jump throws it, so you're the nearest and the game hands it to you; MMV: pressed
---    and let go in your hand), or the one you throw yourself. It's never one of
---    the fireflies (it never takes a firefly's place): it floats over your head, tumbling over
---    and over, carried along with you every frame as they are (straight to you after a
---    teleport). One the game keeps to itself is held all the same, but then it only moves on
---    your screen (the status says so). MM2: until a knife is thrown at you; then it's put ahead
---    of the fireflies, still, its broad side to the knife. MMV: the whole time the shield is up
---    (Gun Shield: the sheriff/hero near or in sight; Protect Against Murderer: the murderer) it's
---    in the middle of the shield, still, its broad side to them, every firefly in a closed frame
---    round it, none in front of it or behind it (no bomb out: the shield as always); a knife at
---    you: every bomb out waiting where it would hit you, on its line, one just behind another.
---    MMV: only while the Gun Shield or Protect Against Murderer is on.
---  * Use Gold Bomb As Particle Helper (MMV): your Gold Bomb kept out the same way; it's ready
---    again 5 s after a throw, so it keeps up to three bombs out at once (two with the Fake Bomb
---    on). Over your head side by side (three in a little triangle); in the shield one above
---    another: two at your upper body and your legs, three at your upper body, middle and legs,
---    the fireflies in one closed frame round them all (and across the gaps between them).
---    Gold Bomb Jump is off while it's on.
---    Both bombs: solid for the game
---    and far bigger than a firefly (on your screen never solid, so it can't push you). Not used
---    with Hidden Knife Interception. As the MM2 murderer (protection paused) it's left alone, so Bomb Jump works
---    then, like Firefly Clutch. (Found when thrown by what it is: the toy's own Handle copied
---    out into the map, the same size, with its sounds.) Fake Bomb Spin Speed (1 to 5 turns a
---    second) is how fast it turns over your head.
 --  * In the lobby, or dead, with no attacker within 200 studs: the ring aura with Firefly Ring
 --    Aura on, else up high over you, hidden (or the mouse swarm).
 --  * Firefly Clutch is off (its timer says DISABLED) while protection is working.
@@ -20997,6 +20952,17 @@ end,"Section \"Firefly Clutch\"")
 --  game lets your client move them (they are yours right after you use the jar).
 local runtime=env.VisualsV2Runtime
 local isMMV=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
+-- Firefly Protection is MM2's only: in MMV it isn't there at all (no section, nothing running:
+-- no Gun Shield, Protect Against Murderer, ring aura, Follow Mouse or Auto Use Firefly Jar, and
+-- no Fake Bomb or Gold Bomb particle helper). What it saved in MMV goes from the settings file.
+-- Bomb Jump Clutch, Gold Bomb Jump, Bomb Fling and Firefly Clutch work on their own without it.
+if isMMV then
+    for _,key in ipairs({"fireflyMMV_GunShield","fireflyMMV_MurdererShield","fireflyMMV_RingAura",
+        "fireflyMMV_FollowMouse","fireflyMMV_AutoJar","fireflyMMV_FakeBomb","fireflyMMV_GoldBomb",
+        "fireflyMMV_FakeBombSpin","fireflyMMV_GoldBombWay","fireflyMMV_ShieldDistance","fireflyMMVShieldGap",
+        "fireflyMMVRingDistance","fireflyMMVRingSpeed"}) do SetCfg(key,nil) end
+    return
+end
 local UserInput=game:GetService("UserInputService")
 local section=mainTab:AddSection("Firefly Protection","Utilities")
 local status=nil
@@ -21055,15 +21021,11 @@ function MMV_OWN.shieldDistance()
     end
     return math.clamp(tonumber(C("fireflyMMV_ShieldDistance",gap and math.clamp(gap+2,1,SHIELD_MAX) or 2)) or 2,1,SHIELD_MAX)
 end
--- MM2's Knife Interception: Interception Distance (studs) is where it stops a knife, how far
--- out along the knife's path from the one it's at its furthest row goes (3 to 25, starting at
--- 5; never past the knife itself), shown round you as a force field dome with Show
--- Interception Area (its colour and transparency, 1 to 10, your own). (Knives are seen from 60
--- studs, further past 14.)
+-- MM2's Knife Interception: it stops a knife 10 studs out along the knife's path from the one it's
+-- at (its furthest row; never past the knife itself), and it guards everyone within 6 studs of
+-- you, you among them. Both fixed. (Knives are seen from 60 studs, further past 14.)
 local INTERCEPT_STUDS=14
--- Interception Area (studs): Knife Interception guards everyone within that many studs of you,
--- you among them (3 to 25, starting at 10)
-local AREA_MIN,AREA_MAX,AREA_START=3,25,10
+local INTERCEPT_STOP,INTERCEPT_AREA=10,6
 local settings={
     shield=MMV_OWN.toggle("shield"),
     intercept=not isMMV and C("fireflyProtectIntercept",false)==true,
@@ -21072,28 +21034,30 @@ local settings={
     ring=isMMV and MMV_OWN.toggle("ring") or C("fireflyProtectRing",C("fireflyProtectShuffle",false)==true)==true,
     mouse=MMV_OWN.toggle("mouse"),
     autoJar=MMV_OWN.toggle("autoJar"),
-    fakeBomb=MMV_OWN.toggle("fakeBomb"),
+    -- (the Fake Bomb as a particle helper: MMV only, taken out of MM2)
+    fakeBomb=isMMV and MMV_OWN.toggle("fakeBomb") or false,
     -- (MMV: the Gold Bomb kept out too, and the shield turned to the murderer as well)
     goldBomb=isMMV and C("fireflyMMV_GoldBomb",false)==true or false,
     murdererShield=isMMV and C("fireflyMMV_MurdererShield",false)==true or false,
     distance=math.clamp(tonumber(C("fireflyProtectDistance",2.2)) or 2.2,1,4),
-    interceptArea=math.clamp(tonumber(C("fireflyInterceptArea",AREA_START)) or AREA_START,AREA_MIN,AREA_MAX),
-    interceptStop=math.clamp(tonumber(C("fireflyInterceptStop",5)) or 5,3,25),
-    areaShow=not isMMV and C("fireflyInterceptAreaShow",false)==true,
-    areaColor=C("fireflyInterceptAreaColor",Color3.fromRGB(90,200,255)),
-    areaAlpha=math.clamp(tonumber(C("fireflyInterceptAreaAlpha",7)) or 7,1,10),
+    interceptArea=INTERCEPT_AREA,
+    interceptStop=INTERCEPT_STOP,
     -- (how far out from you knives are stopped: twice as far as it first was, fixed)
     blockScale=isMMV and 1 or 2,
     ringDistance=math.clamp(tonumber(MMV_OWN.read("ringDistance")) or MMV_OWN.default("ringDistance"),1,8),
     ringSpeed=math.clamp(tonumber(MMV_OWN.read("ringSpeed")) or MMV_OWN.default("ringSpeed"),0,10),
     shieldDistance=isMMV and MMV_OWN.shieldDistance() or 2,
     -- (Fake Bomb Spin Speed: how fast the Fake Bomb turns over your head, in turns a second,
-    -- 1 to 5; each game its own)
-    bombSpin=math.clamp(tonumber(C(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",1)) or 1,1,5),
+    -- 1 to 5; MMV only)
+    bombSpin=isMMV and math.clamp(tonumber(C("fireflyMMV_FakeBombSpin",1)) or 1,1,5) or 1,
 }
 settings.shieldGap=settings.shieldDistance-2
--- (Protect Selected User was taken out: what it saved goes from the settings file)
-for _,key in ipairs({"fireflyProtectUserIntercept","fireflyProtectUserShield","fireflyProtectUser"}) do SetCfg(key,nil) end
+-- (taken out: Protect Selected User; the Interception Distance and Area sliders, now fixed; Show
+-- Interception Area with its colour and transparency; MM2's Fake Bomb Spin Speed. What they saved
+-- goes from the settings file)
+for _,key in ipairs({"fireflyProtectUserIntercept","fireflyProtectUserShield","fireflyProtectUser",
+    "fireflyInterceptArea","fireflyInterceptStop","fireflyInterceptAreaShow","fireflyInterceptAreaColor",
+    "fireflyInterceptAreaAlpha","fireflyFakeBombSpin"}) do SetCfg(key,nil) end
 local JAR_COOLDOWN=16       -- (the same as Firefly Clutch's timer: from opening it to ready again)
 local FOLLOW=20             -- how quickly a shield turns to a moving attacker
 -- MMV's Gun Shield: the original's 5 x 5 square (shield v13), 0.52 apart, centred at your
@@ -22022,7 +21986,7 @@ local function knifeThreats(root,reach,guessAim)
     return threats
 end
 -- (Knife Interception: everyone in its area, you and every other player alive within the
--- Interception Area of you who doesn't have the knife; each knife once, for the first of them
+-- 6 studs of you who doesn't have the knife; each knife once, for the first of them
 -- it's on its way to)
 local function areaThreats(me,radius,reach)
     local byRecord={}
@@ -22044,8 +22008,8 @@ local function areaThreats(me,radius,reach)
     table.sort(list,function(a,b) return a.along<b.along end)
     return list
 end
--- (how far out Knife Interception's rows go for a knife: the Interception Distance, for
--- whoever it's at; and how far off knives are seen for it: 60 studs, further past 14)
+-- (how far out Knife Interception's rows go for a knife: 10 studs, for whoever it's at; and how
+-- far off knives are seen for it: 60 studs)
 local function threatReach() return settings.interceptStop end
 local function interceptReach() return math.max(settings.interceptStop,INTERCEPT_STUDS)/INTERCEPT_STUDS end
 
@@ -22733,12 +22697,9 @@ local BOMB_SPIN=Vector3.new(5.2,2.3,3.9)
 -- tumbles even when the game keeps it to itself; then it only moves on your screen). (Bomb
 -- Fling moves it its own way.)
 local BOMB_SNAP=40
--- (where it goes: 3 studs over your head; protecting, ahead of the fireflies: 1.5 studs past
--- where Knife Shield's stop the knife, 0.8 past Knife Interception's furthest row, just in front
--- of MMV's knife; in the middle of MMV's shield, in the same plane as its fireflies)
+-- (where it goes: 3 studs over your head; just in front of a knife at you; in the middle of the
+-- shield, in the same plane as its fireflies)
 local BOMB_HEAD=3
-local BOMB_AHEAD=1.5
-local BOMB_ROWS=0.8
 -- (MM2's Hidden Knife Interception doesn't use the Fake Bomb)
 local function bombAllowed() return isMMV or not settings.sky end
 -- Protecting, the Fake Bomb isn't one of the formation but goes ahead of it (MMV's shield: in
@@ -22967,7 +22928,6 @@ local function step(dt)
     -- and which way it faces, is worked out on its own as the formation is. The first of them
     -- (the Fake Bomb, if it's out) is the one that goes to a knife)
     local bomb=bombs[1] and bombs[1].part or nil
-    local bombAt,bombFacing,bombSnap=nil,nil,false
     local knifeStack=nil
     local bombPlaces={}
     diagnostics.bombMiddle=false
@@ -23018,28 +22978,17 @@ local function step(dt)
             if spots then
                 for _,point in ipairs(spots) do if #free==0 then break end;take(point) end
                 diagnostics.lastImpact=impact
-                -- (the Fake Bomb ahead of them, right on the knife's line, its broad side to the knife)
-                bombAt,bombFacing,bombSnap=impact-threat.direction*BOMB_AHEAD,-threat.direction,true
                 kind="blocking a knife"
             else
                 -- Knife Interception: every one of them along its path, between it and the one it's
-                -- at, out as far as the Interception Distance (studs) says (3 to 25). They stay put
-                -- while it comes, so it flies into them. (Hidden Knife Interception, and protecting
-                -- someone: every one of them, at a fixed range round the one it's at: the Firefly
+                -- at, out to 10 studs. They stay put while it comes, so it flies into them. (Hidden
+                -- Knife Interception: every one of them, at a fixed range round you: the Firefly
                 -- Distance, twice over, out to 2.6 studs further)
                 local studs=threatReach(threat)
                 local fixedAt=mode.sky and settings.distance*settings.blockScale or nil
                 local count=#free
                 local rows=interceptPoints(threat,count,studs,fixedAt)
                 for _,point in ipairs(rows) do take(point) end
-                -- (the Fake Bomb past the furthest row, on its line, still in front of the knife:
-                -- for a knife at you; one at someone else, it stays with you)
-                if not threat.player then
-                    local furthest=0
-                    for _,point in ipairs(rows) do furthest=math.max(furthest,(point-threat.closest):Dot(-threat.direction)) end
-                    local out=math.max(math.min(furthest+BOMB_ROWS,threat.along-0.3),2.2*settings.blockScale)
-                    bombAt,bombFacing,bombSnap=threat.closest-threat.direction*out,-threat.direction,true
-                end
                 kind=mode.shield and "blocking a knife" or (threat.player and ("intercepting a knife at "..threat.player.Name) or "intercepting a knife")
             end
         end
@@ -23320,18 +23269,16 @@ local function step(dt)
     end
     kind=kind or "idle"
     if not grid then smoothDirection=nil;smoothBombDirection=nil end
-    -- The bombs: over your head, turning as fast as Fake Bomb Spin Speed says (two or three
+    -- The bombs (MMV): over your head, turning as fast as Fake Bomb Spin Speed says (two or three
     -- side by side round it), whatever the fireflies are doing, until a knife is thrown at you
-    -- (MM2: the Fake Bomb then put ahead of the fireflies, its broad side to the knife, still;
-    -- MMV: every bomb out waiting where it would hit you, on its line, one just behind another)
-    -- or (MMV) the shield is up (in its middle); once it's over, back over your head.
+    -- (every bomb out waiting where it would hit you, on its line, one just behind another) or
+    -- the shield is up (in its middle); once it's over, back over your head.
     diagnostics.bombMode=nil;diagnostics.goldMode=nil;diagnostics.bombError=nil
     for index,slot in ipairs(bombs) do
         local part=slot.part
         local at,facing,snap=nil,nil,false
         if knifeStack then
             at,facing,snap=knifeStack.impact-knifeStack.direction*((index-1)*0.7),-knifeStack.direction,true
-        elseif index==1 and bombAt then at,facing,snap=bombAt,bombFacing,bombSnap
         elseif bombPlaces[slot] then at,facing=bombPlaces[slot].at,bombPlaces[slot].facing end
         local how
         if at then
@@ -24255,101 +24202,6 @@ local function refresh()
         autoLoop:Disconnect();autoLoop=nil
     end
 end
--- Show Interception Area (MM2): a force field dome over you, as far out round you as the
--- Interception Distance (where Knife Interception stops a knife at you), closing over your head
--- (always a little above it), in the same ForceField look as the weapon Chams' Force Field: one
--- smooth curved shell, not flat panels. Its colour and transparency are your own (at 1 it's as
--- strong as the Chams). An inside-out copy of it shows it from inside too, when your camera is
--- in it. Only on your screen: made on your side only, never solid, never in the way of anything
--- (the add-on's own checks for walls included). It goes with you every frame.
-local area={folder=nil,shells={},follow=nil,drop=3,size=nil}
-function area.wanted()
-    return not isMMV and runtimeAlive and settings.intercept==true and settings.areaShow==true
-end
-function area.clear()
-    if area.follow then area.follow:Disconnect();area.follow=nil end
-    if area.folder then pcall(function() area.folder:Destroy() end) end
-    area.folder,area.size=nil,nil
-    table.clear(area.shells)
-end
--- (every frame: its middle at your feet, so the half above the ground is the dome)
-function area.place()
-    local root=myRoot()
-    if not root or #area.shells==0 then return end
-    local at=CFrame.new(root.Position-Vector3.new(0,area.drop,0))
-    for _,shell in ipairs(area.shells) do shell.CFrame=at end
-end
-function area.update()
-    if not area.wanted() then area.clear();return end
-    local root,character=myRoot()
-    if not root then return end
-    if not area.folder or not area.folder.Parent then
-        area.clear()
-        local folder=Instance.new("Folder")
-        folder.Name="VisualsV2_InterceptionBarrier"
-        -- (the dome, and the same dome inside out: seen from outside, the near side is the first
-        -- and the far side the second; from inside, the second)
-        for index,scale in ipairs({1,-1}) do
-            local shell=Instance.new("Part")
-            shell.Name="VisualsV2_InterceptionBarrier"
-            shell.Anchored=true
-            shell.CanCollide=false
-            pcall(function() shell.CanTouch=false;shell.CanQuery=false end)
-            shell.CastShadow=false
-            shell.Massless=true
-            shell.Material=Enum.Material.ForceField
-            shell.Size=Vector3.new(10,10,10)
-            local mesh=Instance.new("SpecialMesh")
-            mesh.MeshType=Enum.MeshType.Sphere
-            -- (one axis flipped turns it inside out, the way outlines are made)
-            pcall(function() mesh.Scale=Vector3.new(scale,1,1) end)
-            mesh.Parent=shell
-            shell.Parent=folder
-            area.shells[index]=shell
-        end
-        if not pcall(function() folder.Parent=workspace.CurrentCamera end) then pcall(function() folder.Parent=workspace end) end
-        area.folder=folder
-        area.follow=RunService.RenderStepped:Connect(function() pcall(area.place) end)
-    end
-    -- (how far down your feet are from your middle, and how far the top of your head is above
-    -- them: looked at every half second, not every frame, so the dome never jitters)
-    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
-    local drop=3
-    pcall(function()
-        if humanoid and humanoid.RigType==Enum.HumanoidRigType.R15 then drop=root.Size.Y/2+humanoid.HipHeight end
-    end)
-    local headTop=5.2
-    pcall(function()
-        local head=character:FindFirstChild("Head")
-        if head and head:IsA("BasePart") then
-            headTop=math.clamp(head.Position.Y+head.Size.Y/2-(root.Position.Y-drop),2,12)
-        end
-    end)
-    area.drop=drop
-    -- (as wide as the Interception Distance all round you; as tall as that too, or a little over
-    -- your head when that's higher, so it always closes over it)
-    local radius=settings.interceptStop
-    local height=math.max(radius,math.floor((headTop+1.5)*4+0.5)/4)
-    local size=Vector3.new(radius*2,height*2,radius*2)
-    local alpha=math.clamp(settings.areaAlpha/10,0.1,0.95)
-    for _,shell in ipairs(area.shells) do
-        pcall(function()
-            if area.size~=size then shell.Size=size end
-            shell.Color=settings.areaColor
-            shell.Transparency=alpha
-        end)
-    end
-    area.size=size
-    pcall(area.place)
-end
--- (kept up with you: after a respawn it's round your new character)
-task.spawn(function()
-    while runtimeAlive do
-        pcall(area.update)
-        task.wait(0.5)
-    end
-    pcall(area.update)
-end)
 local controls={}
 local KEYS={shield=MMV_OWN.key("shield"),intercept="fireflyProtectIntercept",sky="fireflyProtectHidden",fakeBomb=MMV_OWN.key("fakeBomb"),
     ring=MMV_OWN.key("ring"),mouse=MMV_OWN.key("mouse"),autoJar=MMV_OWN.key("autoJar"),
@@ -24381,7 +24233,6 @@ local function add(name,field,after)
     controls[field]=addToggle(section,name,settings[field],function(value)
         settings[field]=value;SetCfg(KEYS[field],value)
         if after then pcall(after,value) end
-        task.defer(function() pcall(area.update) end)
         if value then
             for _,other in ipairs(groupOf(field) or {}) do
                 if other~=field then
@@ -24411,7 +24262,7 @@ if isMMV then
     add("Follow Mouse","mouse")
 else
     add("Knife Shield (for yourself)","shield")
-    add("Knife Interception (for teammates)","intercept")
+    add("Knife Interception","intercept")
     add("Hidden Knife Interception (Least effective)","sky")
     pcall(function()
         section:AddParagraph("Only One At A Time","You can only use one of three functions at a time. Turning one on will disable the previously enabled function.")
@@ -24421,8 +24272,10 @@ else
     add("Follow Mouse","mouse")
 end
 add("Auto Use Firefly Jar","autoJar")
-add("Use Fake Bomb As Particle Helper","fakeBomb")
-if isMMV then add("Use Gold Bomb As Particle Helper","goldBomb") end
+if isMMV then
+    add("Use Fake Bomb As Particle Helper","fakeBomb")
+    add("Use Gold Bomb As Particle Helper","goldBomb")
+end
 if isMMV then
     section:AddSlider("Ring Distance",1,8,settings.ringDistance,function(value)
         settings.ringDistance=math.clamp(tonumber(value) or MMV_OWN.default("ringDistance"),1,8);SetCfg(MMV_OWN.key("ringDistance"),settings.ringDistance)
@@ -24444,52 +24297,25 @@ else
     section:AddSlider("Firefly Distance",1.01,4,settings.distance,function(value)
         settings.distance=math.clamp(tonumber(value) or 2.2,1,4);SetCfg("fireflyProtectDistance",settings.distance)
     end)
-    -- (Knife Interception guards everyone within this many studs of you)
-    section:AddSlider("Interception Area (studs)",AREA_MIN,AREA_MAX,settings.interceptArea,function(value)
-        settings.interceptArea=math.clamp(tonumber(value) or AREA_START,AREA_MIN,AREA_MAX)
-        SetCfg("fireflyInterceptArea",settings.interceptArea)
-        pcall(area.update)
-    end)
-    -- (and where it stops a knife: this many studs out from whoever it's at)
-    section:AddSlider("Interception Distance (studs)",3,25,settings.interceptStop,function(value)
-        settings.interceptStop=math.clamp(tonumber(value) or 5,3,25);SetCfg("fireflyInterceptStop",settings.interceptStop)
-        pcall(area.update)
-    end)
-    controls.areaShow=addToggle(section,"Show Interception Area",settings.areaShow,function(value)
-        settings.areaShow=value;SetCfg("fireflyInterceptAreaShow",value)
-        pcall(area.update)
-    end)
-    pcall(function()
-        section:AddColorpicker("Interception Area Colour",settings.areaColor,function(color)
-            if typeof(color)~="Color3" then return end
-            settings.areaColor=color;SetCfg("fireflyInterceptAreaColor",color)
-            pcall(area.update)
-        end)
-    end)
-    section:AddSlider("Interception Area Transparency",1,10,settings.areaAlpha,function(value)
-        settings.areaAlpha=math.clamp(tonumber(value) or 7,1,10);SetCfg("fireflyInterceptAreaAlpha",settings.areaAlpha)
-        pcall(area.update)
+end
+-- (how fast the Fake Bomb turns over your head: 1 to 5 turns a second; MMV only)
+if isMMV then
+    section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
+        settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
+        SetCfg("fireflyMMV_FakeBombSpin",settings.bombSpin)
     end)
 end
--- (how fast the Fake Bomb turns over your head: 1 to 5 turns a second)
-section:AddSlider("Fake Bomb Spin Speed",1,5,settings.bombSpin,function(value)
-    settings.bombSpin=math.clamp(tonumber(value) or 1,1,5)
-    SetCfg(isMMV and "fireflyMMV_FakeBombSpin" or "fireflyFakeBombSpin",settings.bombSpin)
-end)
 runtime.FireflyProtection={
     Active=active,
     DisableAll=function()
-        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","goldBomb","murdererShield","areaShow"}) do
+        for _,field in ipairs({"shield","intercept","sky","ring","mouse","autoJar","fakeBomb","goldBomb","murdererShield"}) do
             if controls[field] then controls[field]:Set(false) end
             settings[field]=false
         end
-        pcall(area.update)
         refresh()
     end,
     UseJar=useJar,
-    -- (Bomb Jump Clutch is off while the Fake Bomb is a particle helper; not as the MM2
-    -- murderer, when protection is paused and the bomb left alone, nor with Hidden Knife
-    -- Interception, which doesn't use it)
+    -- (Bomb Jump Clutch is off while the Fake Bomb is a particle helper: MMV only)
     UsesFakeBomb=function() return settings.fakeBomb==true and bombAllowed() and not murdererMe(myRoot()) end,
     -- (MMV's Use Gold Bomb As Particle Helper: Gold Bomb Jump is off while it keeps the Gold Bomb out)
     UsesGoldBomb=function() return isMMV and settings.goldBomb==true end,
@@ -24518,10 +24344,6 @@ runtime.RegisterReset(function()
     settings.fakeBomb,settings.goldBomb,settings.murdererShield=false,false,false
     releaseBomb()
     settings.distance=2.2
-    settings.interceptArea,settings.areaShow,settings.areaAlpha=AREA_START,false,7
-    settings.interceptStop=5
-    settings.areaColor=Color3.fromRGB(90,200,255)
-    pcall(area.update)
     settings.bombSpin=1
     settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
     settings.shieldDistance,settings.shieldGap=2,0
@@ -27041,7 +26863,7 @@ task.spawn(function()
         task.wait(1)
     end
 end)
-end,"Part at line 27111")
+end,"Part at line 26791")
 
 ;vv2Section(function()
 local creditsSection=mainTab:AddSection("Credits","")
