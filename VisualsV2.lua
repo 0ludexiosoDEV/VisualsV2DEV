@@ -20619,16 +20619,20 @@ local tracker=RunService.Heartbeat:Connect(function()
     end
 end)
 local leaving=Players.PlayerRemoving:Connect(function(plr) motion[plr]=nil end)
--- (how fast they've really moved over the last moment, by the tracker: the speed the game sends
--- for a flung player can read 0)
-local function movedSpeed(history,now)
+-- (how they've really moved over the last moment, by the tracker: the speed the game sends for a
+-- flung player can read 0)
+local function movedVelocity(history,now)
     local last=history and history[#history]
-    if not last or now-last.at>0.1 then return 0 end
+    if not last or now-last.at>0.1 then return Vector3.zero end
     for index=#history-1,1,-1 do
         local entry=history[index]
-        if last.at-entry.at>=0.15 then return (last.position-entry.position).Magnitude/(last.at-entry.at) end
+        if last.at-entry.at>=0.15 then return (last.position-entry.position)/(last.at-entry.at) end
     end
-    return 0
+    return Vector3.zero
+end
+-- (faster than anyone runs or falls, as a fling tells someone's been flung: see flungNow)
+local function flying(velocity)
+    return velocity.Magnitude>100 or Vector3.new(velocity.X,0,velocity.Z).Magnitude>45
 end
 -- Hopping: two take-offs or more (starting to rise faster than HOP_RISE) in the last 1.5 s. A
 -- hopper is mostly in the air, so the bomb isn't put where they'd land (as for one jump: the test
@@ -20638,17 +20642,22 @@ end
 -- at their chest as they stand (as it was), the top of each hop took their feet over it and they
 -- came down onto it: sent down, a bomb under their feet holds them up like a step, and the test
 -- target hopped on it again and again. Kept clear of their feet, no hop landed on it in
--- simulation and it was in a hopper's body 51 to 78% of the time; someone who jumps now and then
--- is still followed along their jump. Where their root stands is where it last was when they
--- landed (the lowest it's been in the last HOP_LANDED seconds): taken from the floor found under
--- them, it was once 5 to 6 studs too low for a whole fling. Someone hopping in place can also look
--- to land 4 to 5 studs lower than they do (twice, your screen and theirs agreed on the top of each
--- hop but not the bottom; running hoppers' landings agreed), so for them it's never taken lower
--- than the top of their hop less what a jump rises.
+-- simulation and it was in a hopper's body 49 to 77% of the time (a sweep from over their head
+-- down to over their feet, "crashing down" on them, was in it only 35 to 59% of the time, and
+-- landed under them just the same with their floor taken too low); someone who jumps now and then
+-- is still followed along their jump. Where their root stands is the higher of where it last was
+-- when they landed (the lowest it's been in the last HOP_LANDED seconds) and over the floor right
+-- under them: each alone has been too low, and too low the bomb is back under their feet. The
+-- lowest of a whole second lagged behind someone hopping up onto higher ground (the test target
+-- landed on it again, the bomb 3 to 10 studs under them); the floor found under them was once 5 to
+-- 6 studs too low for a whole fling; and someone hopping in place can look to land 4 to 5 studs
+-- lower than they do (twice, your screen and theirs agreed on the top of each hop but not the
+-- bottom; running hoppers' landings agreed), so for them it's never taken lower than the top of
+-- their hop less what a jump rises.
 local HOP_RISE=20
-local HOP_MARGIN=0.2
+local HOP_MARGIN=0.5
 local HOP_SWEEP=0.5
-local HOP_LANDED=1
+local HOP_LANDED=0.6
 -- (how high a jump takes them when their Humanoid can't be read: Roblox's own)
 local HOP_JUMP=7.2
 local function hopping(history,now)
@@ -20913,16 +20922,17 @@ local function runFling(target)
     -- (too far off to be on the map with you, or still flying from the last fling, by the speed
     -- the game sends or by how fast they really move: left alone. In the test logs those flings
     -- only counted the last one again, and sent the bomb thousands of studs after them, where one
-    -- was lost)
+    -- was lost; two started on someone still sliding off at 50 studs a second)
     do
         local away=(targetRoot.Position-rootOf(LocalPlayer).Position).Magnitude
         if away>FAR_AWAY then
             note(("SKIP %s out of reach (%.0f studs away)"):format(label,away))
             return false,"out of reach"
         end
-        local speed=math.max(targetRoot.AssemblyLinearVelocity.Magnitude,movedSpeed(motion[target],os.clock()))
-        if speed>FLUNG_SPEED then
-            note(("SKIP %s already flung (%.0f studs/s, %.0f studs away)"):format(label,speed,away))
+        local velocity,seen=targetRoot.AssemblyLinearVelocity,movedVelocity(motion[target],os.clock())
+        if flying(velocity) or flying(seen) then
+            note(("SKIP %s already flung (%.0f studs/s, %.0f studs away)"):format(label,
+                math.max(velocity.Magnitude,seen.Magnitude),away))
             return false,"already flung"
         end
     end
@@ -21034,10 +21044,9 @@ local function runFling(target)
             if hopping(history,now) then
                 local jump=jumpRise(target.Character)
                 local standing=standingHeight(history,now,not moving and jump or nil)
-                if not standing then
-                    local floorY=floorBelow(predicted,ignore)
-                    standing=floorY and floorY-bottom
-                end
+                -- (or over the floor right under them, if that's higher)
+                local floorY=floorBelow(current,ignore)
+                if floorY then standing=math.max(standing or floorY-bottom,floorY-bottom) end
                 if standing then
                     hop=true
                     local clear=standing+(jump or HOP_JUMP)+bottom+thickness/2+HOP_SWEEP+HOP_MARGIN
