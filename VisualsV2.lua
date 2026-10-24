@@ -2581,6 +2581,13 @@ local function bindCharacter(character)
         end
     end))
     task.spawn(function()
+        -- (a new character can be handed over before it's in the workspace: waited for, a
+        -- frame at a time, instead of giving up on it until something else woke it)
+        local waitedSince = os.clock()
+        while character.Parent == nil and session == s and s.token == generation
+            and LocalPlayer.Character == character and os.clock() - waitedSince < 10 do
+            task.wait()
+        end
         local humanoid = character:WaitForChild("Humanoid", 10)
         if not humanoid or not valid(s) then s.binding = false; return end
         local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 10)
@@ -2622,6 +2629,12 @@ local function bindCharacter(character)
             updateMotion(s)
         end)
         refreshTargets(s)
+        -- (every movement's track loaded straight away, not the first time it's needed, so
+        -- after a respawn walking, running and jumping are already yours)
+        for kind in pairs(s.targets or {}) do
+            if not valid(s) then break end
+            pcall(loadRecord, s, kind)
+        end
         task.spawn(function()
             local ok, description = pcall(function() return humanoid:GetAppliedDescription() end)
             if not ok or not description or not valid(s) then return end
@@ -2650,6 +2663,23 @@ end
 RootMaid:GiveTask(LocalPlayer.CharacterAdded:Connect(function(character)
     if alive and runtimeAlive and enabled() then bindCharacter(character) end
 end))
+-- (a check 5 times a second: a character the animations aren't on yet, and aren't being put
+-- on, gets them now; before, a respawn that was missed waited for something else to happen)
+local watchdog = task.spawn(function()
+    while alive and runtimeAlive do
+        task.wait(0.2)
+        if enabled() then
+            local character = LocalPlayer.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+            if character and character.Parent and (not humanoid or humanoid.Health > 0)
+                and (not session or session.character ~= character
+                or (not session.ready and not session.binding)) then
+                pcall(bindCharacter, character)
+            end
+        end
+    end
+end)
+RootMaid:GiveTask(function() pcall(task.cancel, watchdog) end)
 RootMaid:GiveTask(LocalPlayer.CharacterRemoving:Connect(function(character)
     if session and session.character == character then closeSession() end
 end))
@@ -4126,7 +4156,7 @@ KorbloxSystem.LeftToggle=addToggle(
         end
     end
 )
-end,"Part at line 3469")
+end,"Part at line 3499")
 
 local noInterruptionEmote=C("noInterruptionEmote",false)
 local setupAutomaticEmoteProtection
@@ -4634,7 +4664,7 @@ env.VisualsV2Runtime.RegisterReset(function()
     noInterruptionEmote=false
     teardown()
 end)
-end,"Part at line 4134")
+end,"Part at line 4164")
 
 ;vv2Section(function()
 -- Visual Avatar: another Roblox account's avatar in place of yours, on your screen. A copy
@@ -4663,13 +4693,16 @@ local token=0
 local stats={applied=0,lastError=nil,accessoriesLoaded=0}
 local function notify(text) pcall(shared.Notify,"Visual Avatar: "..text,3) end
 
+-- (a username is looked up once, not again on every respawn)
+local resolved={}
 local function resolve(text)
     text=tostring(text or ""):gsub("^%s+",""):gsub("%s+$","")
     if text=="" then return nil,"type a username or user ID first" end
     local id=tonumber(text)
     if id and id>0 and math.floor(id)==id then return id end
+    if resolved[text:lower()] then return resolved[text:lower()] end
     local ok,result=pcall(function() return Players:GetUserIdFromNameAsync(text) end)
-    if ok and tonumber(result) then return tonumber(result) end
+    if ok and tonumber(result) then resolved[text:lower()]=tonumber(result);return tonumber(result) end
     return nil,"no account called "..text
 end
 local function description(userId)
@@ -4830,7 +4863,8 @@ local function hide(state,object)
     state.hidden[object]=object.LocalTransparencyModifier
     pcall(function() object.LocalTransparencyModifier=1 end)
 end
-local function restore()
+-- (keepAnimations: their animations stay on, for a respawn the copy is put straight back after)
+local function restore(keepAnimations)
     local state=current
     current=nil
     pcall(function() RunService:UnbindFromRenderStep(STEP) end)
@@ -4843,7 +4877,7 @@ local function restore()
     for object,value in pairs(state.hidden) do
         pcall(function() object.LocalTransparencyModifier=value end)
     end
-    if type(runtime.SetAnimationOverride)=="function" then pcall(runtime.SetAnimationOverride,nil) end
+    if not keepAnimations and type(runtime.SetAnimationOverride)=="function" then pcall(runtime.SetAnimationOverride,nil) end
 end
 -- A joint's two parts and its offsets (part 1 = part 0 * c0 * pose * c1:Inverse()): a Motor6D
 -- or weld's own, an AnimationConstraint's or RigidConstraint's attachments, a WeldConstraint's
@@ -4880,8 +4914,9 @@ local function apply(template,label)
     local humanoid=character and character:FindFirstChildOfClass("Humanoid")
     local root=character and character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not root or humanoid.Health<=0 then return false,"your character isn't loaded" end
-    restore()
+    restore(true)
     local puppet=clone(template.model)
+    if not puppet and type(runtime.SetAnimationOverride)=="function" then pcall(runtime.SetAnimationOverride,nil) end
     if not puppet then return false,"couldn't copy that avatar" end
     puppet.Name=MARK
     local theirHumanoid=puppet:FindFirstChildOfClass("Humanoid")
@@ -5001,9 +5036,11 @@ local function apply(template,label)
     current=state
     for _,object in ipairs(character:GetDescendants()) do hide(state,object) end
     table.insert(state.connections,character.DescendantAdded:Connect(function(object)
+        -- (a joint the game puts in later is picked up the next frame, not a second later)
+        if animated(object) then state.jointsDirty=true end
         task.defer(function() if current==state and object.Parent then hide(state,object) end end)
     end))
-    table.insert(state.connections,humanoid.Died:Connect(function() if current==state then restore() end end))
+    table.insert(state.connections,humanoid.Died:Connect(function() if current==state then restore(enabled) end end))
     theirRoot.CFrame=root.CFrame*CFrame.new(0,offset,0)
     puppet.Parent=workspace.CurrentCamera or workspace
     state.weapons={}
@@ -5060,6 +5097,11 @@ local function apply(template,label)
         if not root.Parent or not character.Parent or LocalPlayer.Character~=character then restore();return end
         if not puppet.Parent then puppet.Parent=workspace.CurrentCamera or workspace end
         theirRoot.CFrame=root.CFrame*CFrame.new(0,state.offset,0)
+        if state.jointsDirty then
+            state.jointsDirty=false
+            local ok,fresh=pcall(posedJoints,character)
+            if ok then state.mine=fresh end
+        end
         -- (every part of it, out from its root: its own joint, with your pose in it)
         local poses=state.mine
         for _,step in ipairs(state.steps) do
@@ -5110,21 +5152,231 @@ local function apply(template,label)
     if not bound then table.insert(state.connections,RunService.RenderStepped:Connect(function() pcall(follow) end)) end
     follow()
     -- their animations, through the add-on's animation player (kept on every life)
-    if template.animations and type(runtime.SetAnimationOverride)=="function" then
-        pcall(runtime.SetAnimationOverride,table.clone(template.animations))
+    if type(runtime.SetAnimationOverride)=="function" then
+        pcall(runtime.SetAnimationOverride,template.animations and table.clone(template.animations) or nil)
     end
     stats.applied=stats.applied+1
     return true
 end
 
+-- ---------------------------------------------------------------- their weapons, effect and pet
+-- Copy Their Weapons, Effect & Pet: while the account you're showing is in the server with you,
+-- their knife, gun, knife effect and pet are picked for you in Visual Weapons/Effects (looked at
+-- every 2 seconds, so a change of theirs is followed). Each only with its toggle there on; you're
+-- told which to turn on. Your own picks come back when it's switched off (or Visual Avatar is).
+-- (MMV: only the gun, as Visual Weapons there only has the scopes)
+local copy={on=C("vv2VisualAvatarCopyItems",false)==true,userId=nil,saved={},applied={},told={},run=0,
+    roles=nil,rolesAt=-math.huge,
+    mmv=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860}
+local COPY_KINDS={
+    {kind="Knife",word="knife",label="Knives"},
+    {kind="Gun",word="gun",label="Guns"},
+    {kind="Effects",word="effect",label="Effects"},
+    {kind="Pets",word="pet",label="Pets"},
+}
+function copy.visuals(kind)
+    if copy.mmv and kind~="Gun" then return nil end
+    if kind=="Effects" then
+        local effects=runtime.ClientKnifeEffects
+        return effects and {get=effects.GetState,select=effects.Select,catalog=effects.Catalog or {}}
+    elseif kind=="Pets" then
+        local pets=runtime.ClientPets
+        return pets and {get=pets.GetState,select=pets.Select,catalog=pets.Catalog or {}}
+    end
+    local skins=runtime.ClientWeaponSkins
+    return skins and {get=function() return skins.GetState(kind) end,select=function(id) return skins.Select(kind,id) end,
+        catalog=skins.Catalog and skins.Catalog[kind] or {}}
+end
+function copy.name(kind,id)
+    local visuals=copy.visuals(kind)
+    local entry=visuals and visuals.catalog[id]
+    return type(entry)=="table" and tostring(entry.name or entry.label or id) or tostring(id)
+end
+function copy.tools(plr)
+    local list={}
+    for _,container in ipairs({plr.Character,plr:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _,tool in ipairs(container:GetChildren()) do if tool:IsA("Tool") then list[#list+1]=tool end end
+        end
+    end
+    return list
+end
+function copy.toolKind(tool)
+    local name=tool.Name:lower()
+    local item=tostring(tool:GetAttribute("ItemType") or ""):lower()
+    if name:find("knife",1,true) or item=="knife" then return "Knife" end
+    if name:find("gun",1,true) or name:find("scope",1,true) or item=="gun" then return "Gun" end
+end
+-- (the knife or gun shown on their body: the game points to it from their character, else
+-- it's the one of that kind in WeaponDisplays held on to their body)
+function copy.display(plr,kind)
+    local character=plr.Character
+    if not character then return nil end
+    local reference=character:FindFirstChild("DisplayRef"..kind)
+    if reference and reference:IsA("ObjectValue") and reference.Value and reference.Value.Parent then return reference.Value end
+    for _,name in ipairs({kind.."Display",kind.."Holster"}) do
+        local object=character:FindFirstChild(name)
+        if object and not object:IsA("Tool") then return object end
+    end
+    local folder=workspace:FindFirstChild("WeaponDisplays")
+    for _,display in ipairs(folder and folder:GetChildren() or {}) do
+        if display.Name:lower():find(kind:lower(),1,true) then
+            local objects={display}
+            for _,object in ipairs(display:GetDescendants()) do objects[#objects+1]=object end
+            for _,object in ipairs(objects) do
+                local ends={}
+                pcall(function() ends={object.Part0,object.Part1} end)
+                pcall(function() ends[#ends+1]=object.Attachment0 and object.Attachment0.Parent;ends[#ends+1]=object.Attachment1 and object.Attachment1.Parent end)
+                for _,part in pairs(ends) do
+                    if typeof(part)=="Instance" and part:IsDescendantOf(character) then return display end
+                end
+            end
+        end
+    end
+end
+-- (the game's own player data, when it says what they have equipped)
+function copy.gameData(plr)
+    if os.clock()-copy.rolesAt>4 then
+        copy.rolesAt=os.clock()
+        local ok,result=pcall(function()
+            local remote=game:GetService("ReplicatedStorage"):FindFirstChild("GetPlayerData",true)
+            if remote and remote:IsA("RemoteFunction") then return remote:InvokeServer() end
+        end)
+        if ok and type(result)=="table" then copy.roles=result end
+    end
+    local info=type(copy.roles)=="table" and copy.roles[plr.Name]
+    return type(info)=="table" and info or nil
+end
+function copy.identify(kind,object)
+    if typeof(object)~="Instance" then return nil end
+    local visuals=copy.visuals(kind)
+    if not visuals then return nil end
+    for _,target in ipairs({object,object.Parent}) do
+        if typeof(target)=="Instance" then
+            for _,name in ipairs({"ItemID","WeaponID","ItemName"}) do
+                local value=target:GetAttribute(name)
+                if value~=nil and visuals.catalog[tostring(value)] then return tostring(value) end
+            end
+        end
+    end
+    local originals=runtime.OriginalVisuals
+    if originals and type(originals.Identify)=="function" then
+        local ok,id=pcall(originals.Identify,kind,object)
+        if ok and id and visuals.catalog[id] then return id end
+    end
+end
+function copy.detect(plr)
+    local found={}
+    local info=copy.gameData(plr)
+    if info then
+        for key,value in pairs(info) do
+            local name=type(key)=="string" and key:lower() or ""
+            local kind=(name=="effect" or name=="knifeeffect") and "Effects" or name=="pet" and "Pets"
+                or name=="knife" and "Knife" or name=="gun" and "Gun" or nil
+            local visuals=kind and copy.visuals(kind)
+            if visuals and type(value)=="string" and visuals.catalog[value] then found[kind]=value end
+        end
+    end
+    -- (their knife and gun: the one in their hands or backpack, else the one on their body)
+    local knives={}
+    for _,tool in ipairs(copy.tools(plr)) do
+        local kind=copy.toolKind(tool)
+        if kind=="Knife" then knives[#knives+1]=tool end
+        if kind and not found[kind] then found[kind]=copy.identify(kind,tool) end
+    end
+    for _,kind in ipairs({"Knife","Gun"}) do
+        if not found[kind] then found[kind]=copy.identify(kind,copy.display(plr,kind)) end
+    end
+    -- (their effect: on their knife)
+    if not found.Effects then
+        for _,tool in ipairs(knives) do
+            found.Effects=copy.identify("Effects",tool)
+            if found.Effects then break end
+        end
+        if not found.Effects then found.Effects=copy.identify("Effects",copy.display(plr,"Knife")) end
+    end
+    if not found.Pets then found.Pets=copy.identify("Pets",plr.Character and plr.Character:FindFirstChild("Pet")) end
+    return found
+end
+-- (your own picks back, unless you've picked something else since)
+function copy.restore()
+    for kind,id in pairs(copy.saved) do
+        local visuals=copy.visuals(kind)
+        if visuals then
+            local ok,_,selected=pcall(visuals.get)
+            if ok and selected==copy.applied[kind] then pcall(visuals.select,id) end
+        end
+    end
+    table.clear(copy.saved);table.clear(copy.applied);table.clear(copy.told)
+end
+function copy.stop()
+    copy.run=copy.run+1
+    copy.userId=nil
+    copy.restore()
+end
+function copy.step(run,userId)
+    local plr=Players:GetPlayerByUserId(userId)
+    if not plr then
+        if not copy.told.absent then
+            copy.told.absent=true
+            notify("that account isn't in this server, so its weapons, effect and pet can't be copied")
+        end
+        return
+    end
+    copy.told.absent=nil
+    local found=copy.detect(plr)
+    if run~=copy.run then return end
+    local copied,needed,words={},{},{}
+    for _,spec in ipairs(COPY_KINDS) do
+        local id=found[spec.kind]
+        local visuals=id and copy.visuals(spec.kind)
+        if visuals then
+            local ok,on,selected=pcall(visuals.get)
+            if ok and not on then
+                if copy.told[spec.kind]~=id then
+                    copy.told[spec.kind]=id
+                    needed[#needed+1]=(copy.mmv and spec.kind=="Gun") and "Matrixscope / Voidscope" or spec.label
+                    words[#words+1]=spec.word
+                end
+            elseif ok and copy.applied[spec.kind]~=id then
+                if copy.saved[spec.kind]==nil then copy.saved[spec.kind]=selected or "None" end
+                local selectedOk,accepted=pcall(visuals.select,id)
+                if selectedOk and accepted~=false then
+                    copy.applied[spec.kind]=id;copy.told[spec.kind]=nil
+                    copied[#copied+1]=spec.word.." ("..copy.name(spec.kind,id)..")"
+                end
+            end
+        end
+    end
+    if #copied>0 then notify("copied "..plr.DisplayName.."'s "..table.concat(copied,", ")) end
+    if #needed>0 then
+        notify("turn on "..table.concat(needed,", ").." in Visual Weapons/Effects to copy "..plr.DisplayName.."'s "..table.concat(words,", "))
+    end
+end
+function copy.start(userId)
+    if not copy.on or not enabled or not userId then copy.stop();return end
+    if copy.userId==userId then return end
+    copy.stop()
+    copy.userId=userId
+    local run=copy.run
+    task.spawn(function()
+        while copy.run==run and copy.on and enabled and runtimeAlive do
+            local ok,problem=pcall(copy.step,run,userId)
+            if not ok then stats.lastError=tostring(problem) end
+            task.wait(2)
+        end
+    end)
+end
+
 local function load(reason)
     token=token+1
     local mine=token
-    if not enabled then restore();return end
+    if not enabled then restore();copy.stop();return end
     task.spawn(function()
         local userId,why=resolve(target)
         if mine~=token then return end
         if not userId then notify(why);return end
+        copy.start(userId)
         local character=LocalPlayer.Character
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         if not humanoid then return end
@@ -5151,30 +5403,43 @@ local toggle=addToggle(section,"Visual Avatar",enabled,function(value)
     SetCfg("vv2VisualAvatarEnabled",value)
     load(value and "user" or nil)
 end)
-local respawn=LocalPlayer.CharacterAdded:Connect(function(character)
-    restore()
-    if not enabled then return end
-    -- after the game has put your own avatar on
-    local loaded=false
-    local connection
-    connection=LocalPlayer.CharacterAppearanceLoaded:Connect(function(which)
-        if which==character then loaded=true end
+local copyToggle=addToggle(section,"Copy Their Weapons, Effect & Pet",copy.on,function(value)
+    copy.on=value
+    SetCfg("vv2VisualAvatarCopyItems",value)
+    if not value or not enabled then copy.stop();return end
+    task.spawn(function()
+        local userId=resolve(target)
+        if userId and copy.on and enabled then copy.start(userId) end
     end)
-    local deadline=os.clock()+4
-    while not loaded and os.clock()<deadline and LocalPlayer.Character==character do task.wait(0.1) end
-    connection:Disconnect()
-    task.wait(0.3)
+end)
+section:AddParagraph("Copy Their Weapons, Effect & Pet","While they're in the server with you, their knife, gun, knife effect and pet are picked for you in Visual Weapons/Effects. Each one needs its toggle there on.")
+local respawn=LocalPlayer.CharacterAdded:Connect(function(character)
+    restore(enabled)
+    if not enabled then return end
+    -- put straight back on as soon as your new character has a body (it waited up to 4.3
+    -- seconds for the game to finish loading your own avatar before; whatever of yours comes
+    -- after is hidden as it's put on, and new joints are picked up the next frame)
+    local deadline=os.clock()+10
+    while enabled and LocalPlayer.Character==character and os.clock()<deadline do
+        local humanoid=character:FindFirstChildOfClass("Humanoid")
+        if character.Parent and humanoid and humanoid.Health>0 and character:FindFirstChild("HumanoidRootPart") then break end
+        task.wait()
+    end
     if enabled and LocalPlayer.Character==character then load() end
 end)
 runtime.VisualAvatar={Load=load,Restore=restore,GetState=function() return enabled,target,current~=nil end,
-    GetDiagnostics=function() local copy=table.clone(stats);copy.showing=current~=nil;copy.hidden=0
-        if current then for _ in pairs(current.hidden) do copy.hidden=copy.hidden+1 end;copy.joints=current.matched;copy.parts=#current.steps end
-        return copy end}
+    GetCopied=function() return table.clone(copy.applied),copy.userId end,
+    Detect=function(plr) return copy.detect(plr) end,
+    GetDiagnostics=function() local report=table.clone(stats);report.showing=current~=nil;report.hidden=0
+        if current then for _ in pairs(current.hidden) do report.hidden=report.hidden+1 end;report.joints=current.matched;report.parts=#current.steps end
+        report.copied=table.clone(copy.applied)
+        return report end}
 runtime.RegisterReset(function()
-    toggle:Set(false)
-    enabled=false
+    toggle:Set(false);copyToggle:Set(false)
+    enabled=false;copy.on=false
     token=token+1
     restore()
+    copy.stop()
     target=""
     if not runtimeAlive then
         respawn:Disconnect()
@@ -5995,7 +6260,7 @@ runtime.RegisterReset(function()
     if runtimeAlive then return end
     for _,record in pairs(buttons) do pcall(record.Destroy) end
 end)
-end,"Part at line 5196")
+end,"Part at line 5460")
 
 local lockBigButtonPos,lockBindButtonPos,speedButton,BIG_BUTTON_DEFAULT,BIND_BUTTON_DEFAULT,loadStoredPosition,saveStoredPosition,BindableButtons,setupSpeedButtons
 ;vv2Section(function()
@@ -8862,7 +9127,7 @@ runtime.RegisterReset(function()
     stopWatching()
     resetting=false
 end)
-end,"Part at line 8282")
+end,"Part at line 8546")
 
 ;vv2Section(function()
 -- Tool and weapon outlines (the Outline of the Tool Chams add-on): a solid-colour edge
@@ -9075,11 +9340,13 @@ runtime.RegisterReset(function()
     end
     refresh()
 end)
-end,"Part at line 8867")
+end,"Part at line 9131")
 
 ;vv2Section(function()
 local scopeOnly=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
 local data={weapons={Gun={},Knife={}},effects={},effectInfo={},pets={},deathEffects={},metadata={Gun={},Knife={},Effects={},Pets={}},gunBehavior={}}
+-- (the recordings as they are in the file, for telling which one another player's is)
+local raw={}
 local scopeMeshes={["15374602183"]=true,["15374679651"]=true,["79692502167966"]=true}
 local nativeIcons={Gun={"196751820"},Knife={"196750384"}}
 local scopeHoldAnimations={["MM2"]="rbxassetid://15666234025",["MMV"]="rbxassetid://134818020160275"}
@@ -9089,7 +9356,7 @@ local scopeHoldAnimations={["MM2"]="rbxassetid://15666234025",["MMV"]="rbxasseti
 -- changes (DATA_VERSION), so an execute only loads and compiles the add-on's own code.
 -- A recording is unpacked the first time it is shown. Murder Mystery Modded only uses the
 -- scope recordings further down and never needs the file.
-local DATA_VERSION="0188b8f84670"
+local DATA_VERSION="7fd6ab0bf795"
 local DATA_FILE="VisualsV2_Data.txt"
 local DATA_URL=type(env.VisualsV2DataUrl)=="string" and env.VisualsV2DataUrl
     or "https://raw.githubusercontent.com/0ludexiosoDEV/VisualsV2DEV/refs/heads/main/VisualsV2Data.txt"
@@ -9159,6 +9426,7 @@ local dataStatus={source="not needed",records=0,expected=DATA_VERSION}
         if type(target)=="table" then
             if group=="weapons" or group=="effects" or group=="pets" or group=="deathEffects" then
                 target[id]=function() return HttpService:JSONDecode(json) end
+                if group~="deathEffects" then raw[path]=raw[path] or {};raw[path][id]=json end
             else
                 local ok,value=pcall(HttpService.JSONDecode,HttpService,json)
                 if ok and type(value)=="table" then target[id]=value end
@@ -9289,16 +9557,26 @@ local gripSources={Gun={
     RaygunBronze="Raygun",RaygunSilver="Raygun",RaygunGold="Raygun",RaygunRed="Raygun",RaygunChroma="Raygun",
     Snowcannon="SnowcannonChroma",SnowcannonBronze="SnowcannonChroma",SnowcannonSilver="SnowcannonChroma",
     SnowcannonGold="SnowcannonChroma",SnowcannonRed="SnowcannonChroma",
-},Knife={BlueCandy="Candy",BronzeCandy="Candy",SilverCandy="Candy",GoldCandy="Candy"}}
+},Knife={BlueCandy="Candy",BronzeCandy="Candy",SilverCandy="Candy",GoldCandy="Candy",
+    EmberscytheChroma="Emberscythe"}}
 local inheritedGrips={}
+-- (the grip, and whether it's the game's own GripOffset for that weapon)
 local function weaponGrip(category,id,record)
-    -- Every Harvester trophy uses the native held Harvester grip from the scan.
-    if category=="Gun" and id:find("Harvester",1,true) then
+    -- Every Harvester trophy uses the native held Harvester grip from the scan. The Emberbow
+    -- (and its Chroma) is built the same way as the Harvester (its belt mount is the Harvester's,
+    -- only tilted further) and is held with the same grip; worked out from its mount it was
+    -- held rolled onto its side.
+    if category=="Gun" and (id:find("Harvester",1,true) or id:lower():find("emberbow",1,true)) then
         return {type="CFrame",v={0,-0.5109372138977051,0.34054040908813477,1,0,0,0,1,0,0,0,1}}
     end
     if record.grip then return record.grip end
     for _,node in ipairs(record.nodes) do
         if node.class=="Tool" and node.properties.Grip then return node.properties.Grip end
+    end
+    -- (the 2026 weapons record where the game holds them: GripOffset)
+    for _,node in ipairs(record.nodes) do
+        local offset=type(node.attributes)=="table" and node.attributes.GripOffset
+        if type(offset)=="table" and offset.type=="CFrame" then return offset,true end
     end
     local source=gripSources[category] and gripSources[category][id]
     if not source then return nil end
@@ -9306,9 +9584,14 @@ local function weaponGrip(category,id,record)
     if not inheritedGrips[key] then
         local factory=data.weapons[category][source]
         local captured=type(factory)=="function" and factory() or factory
-        if captured then inheritedGrips[key]=weaponGrip(category,source,captured) end
+        if captured then
+            local grip,recorded=weaponGrip(category,source,captured)
+            if grip then inheritedGrips[key]={grip=grip,recorded=recorded} end
+        end
     end
-    return inheritedGrips[key]
+    local inherited=inheritedGrips[key]
+    if inherited then return inherited.grip,inherited.recorded end
+    return nil
 end
 local function assign(object,key,value,objects) object[key]=decode(value,objects) end
 local function setAttribute(object,key,value,objects) object:SetAttribute(key,decode(value,objects)) end
@@ -9317,8 +9600,11 @@ local function create(record,id,category)
     model.Name="VisualsV2_Original_"..id
     local objects={}
     local weapon=category=="Gun" or category=="Knife"
-    local grip=weapon and weaponGrip(category,id,record) or record.grip
+    local grip,recordedGrip=nil,false
+    if weapon then grip,recordedGrip=weaponGrip(category,id,record) end
+    grip=grip or record.grip
     if grip then model:SetAttribute("VisualsV2_CapturedGrip",decode(grip)) end
+    if recordedGrip then model:SetAttribute("VisualsV2_RecordedGripOffset",true) end
     for _,node in ipairs(record.nodes) do
         -- a SurfaceAppearance only works on a real MeshPart; its colour map is already
         -- carried over to the mesh below, so weapons don't need it
@@ -9409,8 +9695,137 @@ local function ids(values)
     table.sort(result)
     return result
 end
+-- Which recorded weapon, effect or pet another player's own one is (for Visual Avatar's Copy
+-- Their Weapons, Effect & Pet): what it's made of (its meshes and textures; for an effect its
+-- particles' textures and colours) matched to the recordings. Each kind's list is made the
+-- first time it's asked for, a little at a time.
+local identify={lists={},making={}}
+function identify.asset(value)
+    local last=nil
+    for digits in tostring(value or ""):gmatch("%d%d%d%d+") do last=digits end
+    return last
+end
+function identify.hex(color)
+    return string.format("%02X%02X%02X",math.floor(color.R*255+0.5),math.floor(color.G*255+0.5),math.floor(color.B*255+0.5))
+end
+local IDENTIFY_FIELDS={MeshId=true,TextureId=true,TextureID=true,Texture=true,ColorMap=true}
+function identify.recordFeatures(path,json)
+    local features,count={},0
+    if path=="effects" then
+        local ok,record=pcall(HttpService.JSONDecode,HttpService,json)
+        for _,node in ipairs(ok and type(record)=="table" and record.nodes or {}) do
+            local properties=node.properties or {}
+            local key
+            if node.class=="ParticleEmitter" or node.class=="Beam" or node.class=="Trail" then
+                key=identify.asset(properties.Texture)
+                if key and not features[key] then features[key]=true;count=count+1 end
+                local sequence=properties.Color
+                local first=type(sequence)=="table" and sequence.points and sequence.points[1]
+                local value=first and first.value and first.value.v
+                if type(value)=="table" and #value>=3 then
+                    key="c"..identify.hex(Color3.new(value[1],value[2],value[3]))
+                    if not features[key] then features[key]=true;count=count+1 end
+                end
+            elseif node.class=="Fire" then
+                local value=type(properties.Color)=="table" and properties.Color.v
+                if type(value)=="table" and #value>=3 then
+                    key="f"..identify.hex(Color3.new(value[1],value[2],value[3]))
+                    if not features[key] then features[key]=true;count=count+1 end
+                end
+            elseif node.class=="ImageLabel" then
+                key=identify.asset(properties.Image)
+                if key and not features[key] then features[key]=true;count=count+1 end
+            end
+        end
+        return features,count,false
+    end
+    -- (a Tool's TextureId is its inventory picture, not part of how it looks: left out)
+    local class=nil
+    for field,value in json:gmatch('"(%w+)":"([^"]*)"') do
+        if field=="class" then class=value
+        elseif IDENTIFY_FIELDS[field] and class~="Tool" then
+            local key=identify.asset(value)
+            if key and not features[key] then features[key]=true;count=count+1 end
+        end
+    end
+    return features,count,json:find('"name":"Chroma"',1,true)~=nil
+end
+function identify.list(path)
+    local list=identify.lists[path]
+    if list then return list end
+    if identify.making[path] then
+        for _=1,100 do task.wait(0.05);if identify.lists[path] then return identify.lists[path] end end
+        return nil
+    end
+    identify.making[path]=true
+    list={}
+    local done=0
+    for id,json in pairs(raw[path] or {}) do
+        local features,count,chroma=identify.recordFeatures(path,json)
+        if count>0 then list[#list+1]={id=id,features=features,count=count,chroma=chroma} end
+        done=done+1
+        if done%80==0 then task.wait() end
+    end
+    table.sort(list,function(a,b) return a.id<b.id end)
+    identify.lists[path]=list
+    identify.making[path]=nil
+    return list
+end
+function identify.observed(root,effectOnly)
+    local features,count,chroma={},0,false
+    local objects={root}
+    for _,object in ipairs(root:GetDescendants()) do objects[#objects+1]=object end
+    local function add(key)
+        if key and not features[key] then features[key]=true;count=count+1 end
+    end
+    for _,object in ipairs(objects) do
+        pcall(function()
+            if object.Name=="Chroma" then chroma=true end
+            if effectOnly then
+                if object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Trail") then
+                    add(identify.asset(object.Texture))
+                    local sequence=object.Color
+                    if typeof(sequence)=="ColorSequence" then add("c"..identify.hex(sequence.Keypoints[1].Value)) end
+                elseif object:IsA("Fire") then add("f"..identify.hex(object.Color))
+                elseif object:IsA("ImageLabel") then add(identify.asset(object.Image)) end
+            elseif object:IsA("MeshPart") then add(identify.asset(object.MeshId));add(identify.asset(object.TextureID))
+            elseif object:IsA("SpecialMesh") or object:IsA("FileMesh") then add(identify.asset(object.MeshId));add(identify.asset(object.TextureId))
+            elseif object:IsA("Decal") or object:IsA("Texture") then add(identify.asset(object.Texture))
+            elseif object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Trail") then add(identify.asset(object.Texture))
+            elseif object:IsA("SurfaceAppearance") then add(identify.asset(object.ColorMap)) end
+        end)
+    end
+    return features,count,chroma
+end
+-- (a weapon or pet: the recording most of whose parts it has; an effect: the one most alike)
+function identify.match(kind,object)
+    local path=kind=="Gun" and "weapons.Gun" or kind=="Knife" and "weapons.Knife"
+        or kind=="Effects" and "effects" or kind=="Pets" and "pets" or nil
+    if not path or typeof(object)~="Instance" then return nil end
+    local effect=path=="effects"
+    local seen,seenCount,chroma=identify.observed(object,effect)
+    if seenCount==0 then return nil end
+    local list=identify.list(path)
+    if not list then return nil end
+    local best,bestScore,bestHits=nil,0,0
+    for _,entry in ipairs(list) do
+        local hits=0
+        for key in pairs(entry.features) do if seen[key] then hits=hits+1 end end
+        if hits>0 then
+            local score=effect and hits/(entry.count+seenCount-hits) or hits/entry.count
+            local better=score>bestScore+1e-6 or (math.abs(score-bestScore)<=1e-6 and (hits>bestHits
+                or hits==bestHits and best and entry.chroma==chroma and best.chroma~=chroma))
+            if better then best,bestScore,bestHits=entry,score,hits end
+        end
+    end
+    -- (a weapon or pet has to have two thirds of a recording's parts: a plain one sharing its
+    -- mesh with another's isn't taken for it)
+    if not best or bestScore<(effect and 0.4 or 0.66) then return nil end
+    return best.id,bestScore
+end
 env.VisualsV2Runtime.OriginalVisuals={
     ScopeMeshes=scopeMeshes,
+    Identify=function(kind,object) return identify.match(kind,object) end,
     NativeIcons=nativeIcons,
     GetWeapon=function(kind,id) return get(kind,id,data.weapons[kind] and data.weapons[kind][id]) end,
     GetEffect=function(id) return get("Effect",id,data.effects[id]) end,
@@ -9420,7 +9835,13 @@ env.VisualsV2Runtime.OriginalVisuals={
     HasWeapon=function(kind,id) return data.weapons[kind] and data.weapons[kind][id]~=nil end,
     HasEffect=function(id) return data.effects[id]~=nil end,
     GetEffectInfo=function(id) return data.effectInfo[id] end,
-    GetGunBehavior=function(id) return data.gunBehavior[id] end,
+    -- (every Emberbow, its Chroma and any trophy one, has Harvester's shot sound: the file has the
+    -- Emberbow's and its Chroma's, and one added later without its own takes the Emberbow's)
+    GetGunBehavior=function(id)
+        local behavior=data.gunBehavior[id]
+        if behavior==nil and type(id)=="string" and id:lower():find("emberbow",1,true) then behavior=data.gunBehavior.Emberbow end
+        return behavior
+    end,
     ScopeHoldAnimations=scopeHoldAnimations,
     Decode=decode,
     Metadata=data.metadata,
@@ -9435,7 +9856,7 @@ env.VisualsV2Runtime.OriginalVisuals={
 env.VisualsV2Runtime.RegisterReset(function()
     if not runtimeAlive then alive=false;cache:Destroy();table.clear(built);table.clear(weaponUse) end
 end)
-end,"Part at line 9080")
+end,"Part at line 9344")
 
 ;vv2Section(function()
 local mmv=game.GameId==10413186812 or game.GameId==10769671266 or game.PlaceId==93017634738276 or game.PlaceId==81374640397860
@@ -10861,6 +11282,14 @@ local function buildTemplate(entry)
     if not root then clone:Destroy(); return nil,"No weapon mesh was found for "..entry.name end
     local attachment=gripAttachment(root)
     local attachmentGrip=attachment and attachment.CFrame
+    -- (a knife's mount at its middle, hardly turned, is where it sits on your back, not where
+    -- the hand holds it (about a stud below the middle): those knives are held like every knife
+    -- without one. The 2026 Halloween knives, Mortal, Embersickle, Chroma Beachy and Chroma
+    -- Icecream (and a few older ones) had their middle put in your hand)
+    if entry.kind=="Knife" and attachmentGrip and attachmentGrip.Position.Magnitude<0.6 then
+        local _,angle=attachmentGrip:ToAxisAngle()
+        if math.abs(angle)<=math.rad(15) then attachmentGrip=nil end
+    end
     local holsterAttachment=attachment or root:FindFirstChild("Attachment")
     local holsterGrip=holsterAttachment and holsterAttachment:IsA("Attachment") and holsterAttachment.CFrame or CFrame.new()
     local texture=assetId(modelData.textureid or modelData.texture or data.textureid or data.texture)
@@ -10905,7 +11334,8 @@ local function buildTemplate(entry)
         -- all Gingerscythes) uses the real Batwing's held grip exactly as MM2 records it,
         -- so they all sit in the hand the same way the Batwing does.
         local key=compact(entry.id)..compact(entry.name)
-        if key:find("scythe",1,true) or compact(entry.id)=="icewing" then
+        -- (not one whose own GripOffset the game records: the Emberscythe and its Chroma)
+        if (key:find("scythe",1,true) or compact(entry.id)=="icewing") and not clone:GetAttribute("VisualsV2_RecordedGripOffset") then
             grip=KNOWN_GRIPS["305826272"].grip;useToolGrip=true
         end
     end
@@ -12196,7 +12626,7 @@ env.VisualsV2Runtime.RegisterReset(function()
 end)
 bindContainers()
 updateWatching()
-end,"Part at line 9440")
+end,"Part at line 9860")
 
 
 
@@ -12694,7 +13124,7 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 refresh()
-end,"Part at line 12203")
+end,"Part at line 12632")
 
 ;vv2Section(function()
 -- Death effects: when you kill someone while a visual knife effect is chosen, their body
@@ -12942,7 +13372,7 @@ runtime.RegisterReset(function()
         table.clear(playerConnections)
     end
 end)
-end,"Part at line 12699")
+end,"Part at line 13128")
 
 ;vv2Section(function()
 local effects=env.VisualsV2Runtime.ClientKnifeEffects
@@ -13081,7 +13511,7 @@ env.VisualsV2Runtime.RegisterReset(function()
         for _,list in pairs(characterConnections) do for _,connection in ipairs(list) do connection:Disconnect() end end
     end
 end)
-end,"Part at line 12947")
+end,"Part at line 13376")
 
 
 ;vv2Section(function()
@@ -13275,7 +13705,7 @@ env.VisualsV2Runtime.RegisterReset(function()
     if not runtimeAlive then alive=false;for _,connection in ipairs(connections) do connection:Disconnect() end end
 end)
 refresh()
-end,"Part at line 13087")
+end,"Part at line 13516")
 
 
 ;vv2Section(function()
@@ -13952,7 +14382,7 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 update()
-end,"Part at line 13281")
+end,"Part at line 13710")
 
 
 ;vv2Section(function()
@@ -14334,7 +14764,7 @@ env.VisualsV2Runtime.RegisterReset(function()
     end
 end)
 updateActive()
-end,"Part at line 13958")
+end,"Part at line 14387")
 
 
 
@@ -15829,7 +16259,7 @@ runtime.SaveWeaponDiagnostics=function()
     pcall(shared.Notify,"Could not save the weapon report: file writing and clipboard access are unavailable.",1)
     return false,"File writing and clipboard access are unavailable"
 end
-end,"Part at line 15569")
+end,"Part at line 15998")
 
 
 ;vv2Section(function()
@@ -17683,7 +18113,7 @@ task.spawn(function()
     end
 end)
 runtime.RegisterReset(function() table.clear(pending) end)
-end,"Part at line 17554")
+end,"Part at line 17983")
 
 ;vv2Section(function()
 local section=mainTab:AddSection("Customization","Visuals")
@@ -20388,6 +20818,287 @@ end)
 end,"Section \"Bomb Fling\"")
 
 ;vv2Section(function()
+-- Give Gun (from ATAOS, made to fit Visuals V2): with the gun on you, you're taken to the
+-- player (just in front of them when they're moving) and reset there, so the gun drops at
+-- their feet for them to pick up. Give Gun To Friends In Server gives it to your nearest
+-- friend in the round instead, with nobody to pick. Its bind button follows Miscellaneous'
+-- Lock Bind Button POS, Mute Button SFX and the button gradient like every other one; it
+-- lights up when you have the gun and someone to give it to.
+local runtime=env.VisualsV2Runtime
+local ReplicatedStorage=game:GetService("ReplicatedStorage")
+local section=mainTab:AddSection("Give Gun","Utilities")
+local BIND_ID="VisualsV2_GiveGun"
+local BIND_DEFAULT=UDim2.new(0.28,0,0.78,0)
+local settings={
+    distance=math.clamp(tonumber(C("giveGunDistance",5)) or 5,1,20),
+    size=math.clamp(tonumber(C("giveGunButtonSize",11)) or 11,5,25)/100,
+}
+local state={selected=nil,friends=false,tracking=false,auto=false,keybindOn=false,giving=false,bind=false}
+local connections={noclip=nil,tracking=nil}
+local alive=true
+
+local function notify(text,seconds) pcall(shared.Notify,text,seconds or 2) end
+local function rootOf(plr)
+    local character=plr and plr.Character
+    return character and character:FindFirstChild("HumanoidRootPart") or nil
+end
+local function living(plr)
+    local character=plr and plr.Character
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid and humanoid.Health>0 and rootOf(plr)~=nil
+end
+local function holds(plr,word)
+    for _,container in ipairs({plr.Character,plr:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _,tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and (tool.Name:lower():find(word,1,true)
+                    or (word=="gun" and tool:FindFirstChild("Handle") and tool.Handle:FindFirstChild("Gun"))) then return true end
+            end
+        end
+    end
+    return false
+end
+local function hasGun() return holds(LocalPlayer,"gun") end
+
+-- the game's own player data (who's in the round, who's the murderer), fetched in the
+-- background as Bomb Fling does
+local roles={data=nil,at=-math.huge,fetching=false}
+local function refreshRoles()
+    if roles.fetching or os.clock()-roles.at<3 then return end
+    roles.fetching=true
+    task.spawn(function()
+        local ok,result=pcall(function()
+            local remote=ReplicatedStorage:FindFirstChild("GetPlayerData",true)
+            if remote and remote:IsA("RemoteFunction") then return remote:InvokeServer() end
+        end)
+        if ok and type(result)=="table" then roles.data=result end
+        roles.at=os.clock();roles.fetching=false
+    end)
+end
+
+-- friends: asked once per player (and again after 2 minutes), in the background
+local friendCache=setmetatable({}, {__mode="k"})
+local function checkFriend(plr,wait)
+    if plr==LocalPlayer then return false end
+    local cached=friendCache[plr]
+    if cached and (cached.checking or os.clock()-cached.at<120) then
+        if cached.checking and wait then
+            for _=1,20 do if not cached.checking then break end;task.wait(0.1) end
+        end
+        return cached.value==true
+    end
+    local entry={value=cached and cached.value or false,at=os.clock(),checking=true}
+    friendCache[plr]=entry
+    local function ask()
+        local ok,result=pcall(function() return LocalPlayer:IsFriendsWith(plr.UserId) end)
+        entry.value=ok and result==true;entry.at=os.clock();entry.checking=false
+    end
+    if wait then ask() else task.spawn(ask) end
+    return entry.value==true
+end
+local function primeFriends() for _,plr in ipairs(Players:GetPlayers()) do checkFriend(plr,false) end end
+-- (your nearest friend who's alive and in the round; never the murderer, who can't take it)
+local function nearestFriend(wait)
+    refreshRoles()
+    local mine=rootOf(LocalPlayer)
+    local best,bestDistance=nil,math.huge
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=LocalPlayer and living(plr) and checkFriend(plr,wait) and not holds(plr,"knife") then
+            local info=type(roles.data)=="table" and roles.data[plr.Name] or nil
+            local inRound=type(roles.data)~="table" or (type(info)=="table" and not info.Dead and not info.Killed and info.Role~="Murderer")
+            if inRound then
+                local distance=mine and (rootOf(plr).Position-mine.Position).Magnitude or 0
+                if distance<bestDistance then best,bestDistance=plr,distance end
+            end
+        end
+    end
+    return best
+end
+local function target(wait)
+    if state.friends then return nearestFriend(wait) end
+    local plr=state.selected
+    if plr and plr.Parent and plr~=LocalPlayer then return plr end
+    return nil
+end
+
+-- other players walked through on your screen while you're taken to them (put back after)
+local changed={}
+local function noclip(on)
+    if connections.noclip then connections.noclip:Disconnect();connections.noclip=nil end
+    if on then
+        connections.noclip=RunService.Stepped:Connect(function()
+            for _,plr in ipairs(Players:GetPlayers()) do
+                if plr~=LocalPlayer and plr.Character then
+                    for _,part in ipairs(plr.Character:GetDescendants()) do
+                        if part:IsA("BasePart") and part.CanCollide then
+                            if changed[part]==nil then changed[part]=true end
+                            part.CanCollide=false
+                        end
+                    end
+                end
+            end
+        end)
+        return
+    end
+    for part in pairs(changed) do
+        if part.Parent then pcall(function() part.CanCollide=true end) end
+    end
+    table.clear(changed)
+end
+local function spotNear(plr)
+    local root=rootOf(plr)
+    if not root then return nil end
+    local humanoid=plr.Character:FindFirstChildOfClass("Humanoid")
+    local direction=humanoid and humanoid.MoveDirection or Vector3.zero
+    if direction.Magnitude>0.1 then
+        return root.CFrame+direction.Unit*settings.distance+Vector3.new(0,3,0)
+    end
+    return root.CFrame+Vector3.new(0,3,0)
+end
+local function stopTracking()
+    if connections.tracking then connections.tracking:Disconnect();connections.tracking=nil end
+end
+
+local function give(plr)
+    if state.giving or not runtimeAlive then return end
+    if not plr then
+        notify(state.friends and "Give Gun: no friend in the round to give it to" or "Give Gun: no player selected",3)
+        return
+    end
+    if not hasGun() then notify("Give Gun: you don't have the gun",3);return end
+    local character=LocalPlayer.Character
+    local root=rootOf(LocalPlayer)
+    local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid or humanoid.Health<=0 then notify("Give Gun: your character isn't loaded",3);return end
+    local spot=spotNear(plr)
+    if not spot or not living(plr) then notify("Give Gun: "..plr.DisplayName.." isn't alive",3);return end
+    state.giving=true
+    notify("Give Gun: giving the gun to "..plr.DisplayName.."...",2)
+    noclip(true)
+    root.CFrame=spot
+    if state.tracking then
+        connections.tracking=RunService.Stepped:Connect(function()
+            local nowSpot=root.Parent and spotNear(plr)
+            if nowSpot then root.CFrame=nowSpot end
+        end)
+        task.wait(0.5)
+    else
+        task.wait(0.3)
+    end
+    if character.Parent then
+        pcall(function() character:BreakJoints() end)
+        pcall(function() humanoid.Health=0 end)
+    end
+    stopTracking()
+    task.delay(2,function() noclip(false) end)
+    state.giving=false
+end
+local function press() task.spawn(function() give(target(true)) end) end
+
+-- ---------------------------------------------------------------- controls
+local controls={}
+local function toggle(name,key,callback)
+    local controller=addToggle(section,name,C(key,false),function(value)
+        SetCfg(key,value);callback(value)
+    end)
+    controls[#controls+1]=controller
+    return controller
+end
+section:AddParagraph("Give Gun","With the gun on you, takes you to the player and resets you there, so the gun drops for them to pick up.")
+section:AddPlayerDropdown("Select Player",function(plr)
+    if typeof(plr)=="Instance" and plr:IsA("Player") and plr~=LocalPlayer then state.selected=plr else state.selected=nil end
+end)
+toggle("Give Gun To Friends In Server","giveGunFriends",function(value)
+    state.friends=value
+    if value then primeFriends();refreshRoles() end
+end)
+section:AddSlider("Teleport Distance (Studs)",1,20,settings.distance,function(value)
+    settings.distance=math.clamp(tonumber(value) or 5,1,20);SetCfg("giveGunDistance",settings.distance)
+end)
+toggle("Dynamic Tracking (Stay In Front)","giveGunTracking",function(value) state.tracking=value end)
+toggle("Auto Give Gun","giveGunAuto",function(value)
+    state.auto=value
+    if not value then return end
+    task.spawn(function()
+        while state.auto and alive and runtimeAlive do
+            if not state.giving and hasGun() then
+                local plr=target(true)
+                if plr then give(plr) end
+            end
+            task.wait(2)
+        end
+    end)
+end)
+section:AddButton("Give Gun",press)
+
+local function bindSize()
+    local b=BindableButtons.Buttons[BIND_ID]
+    if not b then return end
+    local camera=workspace.CurrentCamera
+    local screen=camera and camera.ViewportSize or Vector2.new(1920,1080)
+    if screen.X<=1 or screen.Y<=1 then screen=Vector2.new(1920,1080) end
+    b.Size=UDim2.new(settings.size*(screen.Y/screen.X),0,settings.size,0)
+end
+-- (one press gives the gun; the button shows on, the gradient at full, while it's ready)
+local function createBind()
+    BindableButtons.AddBButton(BIND_ID,"Give Gun",press,press,function(position)
+        saveStoredPosition("giveGunButtonPosition",position)
+    end)
+    BindableButtons:SetPosition(BIND_ID,loadStoredPosition("giveGunButtonPosition",BIND_DEFAULT))
+    BindableButtons:SetLocked(BIND_ID,lockBindButtonPos)
+    bindSize()
+end
+toggle("Enable Give Gun Button","giveGunButtonEnabled",function(value)
+    state.bind=value
+    if value then createBind() else BindableButtons:DeleteBButton(BIND_ID) end
+end)
+section:AddSlider("Give Gun Button Size",5,25,settings.size*100,function(value)
+    settings.size=math.clamp(tonumber(value) or 11,5,25)/100
+    SetCfg("giveGunButtonSize",settings.size*100)
+    bindSize()
+end)
+section:AddButton("Reset Give Gun Button Position",function()
+    saveStoredPosition("giveGunButtonPosition",BIND_DEFAULT)
+    BindableButtons:SetPosition(BIND_ID,BIND_DEFAULT)
+end)
+toggle("Enable Give Gun Keybind","giveGunKeybindEnabled",function(value) state.keybindOn=value end)
+section:AddKeybind("Give Gun Keybind","G",function()
+    if runtimeAlive and state.keybindOn then press() end
+end)
+toggle("Hide Button Text","giveGunHideText",function(value)
+    if runtime.ButtonText then runtime.ButtonText.SetHidden({BIND_ID},value) end
+end)
+section:AddParagraph("Auto Give Gun","Only gives the gun while you have it, so pick it up first (an auto grab gun does this for you).")
+
+-- the bind button's look: on while you have the gun and there's someone to give it to
+task.spawn(function()
+    while alive and runtimeAlive do
+        task.wait(0.5)
+        if state.bind and BindableButtons.Buttons[BIND_ID] then
+            local ready=not state.giving and hasGun() and target(false)~=nil
+            pcall(function() BindableButtons:SetValue(BIND_ID,ready,false) end)
+        end
+    end
+end)
+local joined=Players.PlayerAdded:Connect(function(plr) if state.friends then checkFriend(plr,false) end end)
+local respawn=LocalPlayer.CharacterAdded:Connect(function()
+    stopTracking();noclip(false);state.giving=false
+end)
+runtime.GiveGun={Give=press,GetState=function() return table.clone(state),table.clone(settings) end}
+runtime.RegisterReset(function()
+    for _,controller in ipairs(controls) do pcall(function() controller:Set(false) end) end
+    stopTracking();noclip(false)
+    BindableButtons:DeleteBButton(BIND_ID)
+    state.selected=nil;state.giving=false
+    settings.distance,settings.size=5,0.11
+    if not runtimeAlive then
+        alive=false
+        joined:Disconnect();respawn:Disconnect()
+    end
+end)
+end,"Section \"Give Gun\"")
+
+;vv2Section(function()
 local section=mainTab:AddSection("Firefly Clutch","Utilities")
 local equipGunAfterClutch=C("fireflyEquipGun",false)
 local shootAfterClutch=C("fireflyShootMurderer",false)
@@ -21047,6 +21758,8 @@ local settings={
     ringDistance=math.clamp(tonumber(MMV_OWN.read("ringDistance")) or MMV_OWN.default("ringDistance"),1,8),
     ringSpeed=math.clamp(tonumber(MMV_OWN.read("ringSpeed")) or MMV_OWN.default("ringSpeed"),0,10),
     shieldDistance=isMMV and MMV_OWN.shieldDistance() or 2,
+    -- (MM2's Firefly Ring Speed: 1 to 5, 2 being the speed it was fixed at before)
+    mm2RingSpeed=not isMMV and math.clamp(tonumber(C("fireflyMM2RingSpeed",2)) or 2,1,5) or 2,
     -- (Fake Bomb Spin Speed: how fast the Fake Bomb turns over your head, in turns a second,
     -- 1 to 5; MMV only)
     bombSpin=isMMV and math.clamp(tonumber(C("fireflyMMV_FakeBombSpin",1)) or 1,1,5) or 1,
@@ -23256,7 +23969,7 @@ local function step(dt)
                 active=true
                 kind=kind or readyLabel()
             else
-                spots=rest(settings.distance,1.6,"idle")
+                spots=rest(settings.distance,settings.mm2RingSpeed*0.8,"idle")
             end
         elseif mode.sky and not pointAt then
             -- (Hidden Knife Interception: up high the whole time, until a knife is thrown at you)
@@ -23264,7 +23977,7 @@ local function step(dt)
             sky=true
             kind=kind or "hidden up high"
         else
-            spots=rest(settings.distance,1.6,"idle")
+            spots=rest(settings.distance,settings.mm2RingSpeed*0.8,"idle")
         end
     end
     kind=kind or "idle"
@@ -24297,6 +25010,10 @@ else
     section:AddSlider("Firefly Distance",1.01,4,settings.distance,function(value)
         settings.distance=math.clamp(tonumber(value) or 2.2,1,4);SetCfg("fireflyProtectDistance",settings.distance)
     end)
+    -- (how fast the fireflies go round you: 1 to 5, 2 as before)
+    section:AddSlider("Firefly Ring Speed",1,5,settings.mm2RingSpeed,function(value)
+        settings.mm2RingSpeed=math.clamp(tonumber(value) or 2,1,5);SetCfg("fireflyMM2RingSpeed",settings.mm2RingSpeed)
+    end)
 end
 -- (how fast the Fake Bomb turns over your head: 1 to 5 turns a second; MMV only)
 if isMMV then
@@ -24346,6 +25063,7 @@ runtime.RegisterReset(function()
     settings.distance=2.2
     settings.bombSpin=1
     settings.ringDistance,settings.ringSpeed=MMV_OWN.default("ringDistance"),MMV_OWN.default("ringSpeed")
+    settings.mm2RingSpeed=2
     settings.shieldDistance,settings.shieldGap=2,0
     if autoLoop then autoLoop:Disconnect();autoLoop=nil end
     stop()
@@ -26121,7 +26839,7 @@ end)
 addToggle(miscSection,"Lock Bind Button POS",lockBindButtonPos,function(state)
     lockBindButtonPos=state
     SetCfg("lockBindButtonPos",state)
-    -- (every bind button of the add-on: Speed Glitch and Bomb Fling's)
+    -- (every bind button of the add-on: Speed Glitch's, Bomb Fling's and Give Gun's)
     for id in pairs(BindableButtons.Buttons) do BindableButtons:SetLocked(id,state) end
 end)
 -- a 3-colour gradient of your own for the outline of every big button (Speed Glitch,
@@ -26863,7 +27581,7 @@ task.spawn(function()
         task.wait(1)
     end
 end)
-end,"Part at line 26791")
+end,"Part at line 27508")
 
 ;vv2Section(function()
 local creditsSection=mainTab:AddSection("Credits","")
