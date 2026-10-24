@@ -20567,6 +20567,27 @@ local function measure(track,position,now)
     local first=track[1]
     return now-first.at>=0.05 and (position-first.position)/(now-first.at) or Vector3.zero
 end
+-- (how fast they're turning, in radians a second: the way they went over the first half of the
+-- last quarter second against the way they went over the second half)
+local function turnRate(track)
+    local count=#track
+    if count<4 then return 0 end
+    local first,middle,last=track[1],track[math.floor(count/2)+1],track[count]
+    local older,newer=middle.position-first.position,last.position-middle.position
+    local span=(last.at-first.at)/2
+    if span<0.05 or Vector3.new(older.X,0,older.Z).Magnitude<0.5 or Vector3.new(newer.X,0,newer.Z).Magnitude<0.5 then return 0 end
+    local turn=math.atan2(newer.Z,newer.X)-math.atan2(older.Z,older.X)
+    turn=(turn+math.pi)%(2*math.pi)-math.pi
+    return math.clamp(turn/span,-4,4)
+end
+-- (how far someone going that fast and turning that fast gets in that long: round the arc)
+local function wayAhead(horizontal,turn,seconds)
+    local angle=turn*seconds
+    if math.abs(angle)<0.05 then return horizontal*seconds end
+    local heading=math.atan2(horizontal.Z,horizontal.X)+angle/2
+    local chord=2*horizontal.Magnitude/math.abs(turn)*math.sin(math.abs(angle)/2)
+    return Vector3.new(math.cos(heading),0,math.sin(heading))*chord
+end
 -- (flung: going far faster than anyone runs, or well off the height they started at)
 local function flungNow(targetRoot,startY,measured)
     return targetRoot.AssemblyLinearVelocity.Magnitude>140 or Vector3.new(measured.X,0,measured.Z).Magnitude>45
@@ -20602,14 +20623,17 @@ local PASS_TIME=0.5
 -- ahead depends on both players' lag, which can't be read, so a fling tries a few distances in
 -- turn (LEAD_TRIES, round the one that worked last), staying on each a while (the bomb takes
 -- about a third of a second to reach their screen); the one it was on when it last flung
--- someone is kept for next time. In the test logs it had to be about 0.55 s ahead: put 0.27 s
--- and 0.37 s ahead, a walking player saw it 2.4 and 1.4 studs behind them. (It can't be welded
--- on: a weld you make exists only on your screen, and welded to them the bomb would stop being
--- yours to send. Attaching it like Reset Player, sweeping it back and forth ahead of them and
--- leaving it in their path all flung less.)
+-- someone is kept for next time. In the test logs it had to be about 0.55 s ahead one time (put
+-- 0.27 s and 0.37 s ahead, a walking player saw it 2.4 and 1.4 studs behind them) and about 0.35 s
+-- the next (put 0.52 s ahead, they saw it 2.5 studs in front). A player walking in a curve is
+-- followed round it (see turnRate), not along a straight line: going straight on, it sat 2 to 3.6
+-- studs to one side of them for a second. (It can't be welded on: a weld you make exists only on
+-- your screen, and welded to them the bomb would stop being yours to send. Attaching it like
+-- Reset Player, sweeping it back and forth ahead of them and leaving it in their path all flung
+-- less.)
 local LEAD_TRIES={0,0.1,-0.1}
 local LEAD_DWELL=0.45
-local leadExtra=0.5
+local leadExtra=0.45
 -- (a hit shows on your screen about this long after the bomb that did it was put there: it
 -- takes a third of a second to reach them, and their fling about a quarter to come back)
 local HIT_SEEN_AFTER=0.55
@@ -20790,7 +20814,8 @@ local function runFling(target)
             local extra=math.clamp(leadExtra+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1],0.2,1)
             local lead=math.clamp(pingSeconds(),0,0.4)*2+extra
             tried[#tried+1]={at=now,extra=extra,moving=moving}
-            local predicted=moving and current+horizontal*lead or current
+            local turn=moving and turnRate(track) or 0
+            local predicted=moving and current+wayAhead(horizontal,turn,lead) or current
             -- jumping or falling: along the arc, but never below the floor under them
             if math.abs(verticalSpeed)>2 then
                 local ignore={bomb}
@@ -20827,9 +20852,9 @@ local function runFling(target)
                 local forward=horizontal.Magnitude>0.5 and horizontal.Unit or Vector3.new(look.X,0,look.Z)
                 forward=forward.Magnitude>0.01 and forward.Unit or Vector3.new(0,0,-1)
                 local offset=position-current
-                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f moved=%.0f"):format(label,
+                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f turn=%.1f moved=%.0f"):format(label,
                     offset:Dot(forward),offset:Dot(Vector3.new(-forward.Z,0,forward.X)),offset.Y,horizontal.Magnitude,
-                    moving and lead or 0,measured.Magnitude))
+                    moving and lead or 0,turn,measured.Magnitude))
             end
         end
     end)
@@ -21153,7 +21178,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d leadExtra=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,leadExtra,cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; turn = how fast they're turning (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
