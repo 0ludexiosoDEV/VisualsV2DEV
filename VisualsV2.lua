@@ -20080,10 +20080,11 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --    a loose part to the player next to it, and only the bomb's owner can move it for
 --    everyone); then it goes to the target in short bursts, coming back to you whenever it
 --    stops being yours
---  * the bomb is attached to the target the way Reset Player (aux0on) attaches you: put at
---    their head every frame after the physics step, spinning and sent down at full power, its
---    physics replication root set to their HumanoidRootPart and touched against them, so the
---    fling lands almost instantly
+--  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
+--    the physics step, touched against them, and (every other pass) its physics replication
+--    root set to their HumanoidRootPart. It's laid flat, biggest face down, and works its way
+--    from just above their head down to their feet, over and over, sent up at full power and
+--    spinning (sent down, as Reset Player sends you, it only pushes them into the floor)
 local runtime=env.VisualsV2Runtime
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
@@ -20094,6 +20095,7 @@ local settings={
     prediction=math.clamp(tonumber(C("bombFlingPrediction",0)) or 0,0,20),
     loopDelay=math.clamp(tonumber(C("bombFlingLoopDelay",1)) or 1,0,10),
     auraDistance=math.clamp(tonumber(C("bombFlingAuraStuds",15)) or 15,5,50),
+    attach=C("bombFlingAttach",true)~=false,
 }
 local selectedPlayers,whitelist={},{}
 local loops={}
@@ -20494,6 +20496,30 @@ local function flung(targetRoot,startY)
     local velocity=targetRoot.AssemblyLinearVelocity
     return velocity.Magnitude>140 or math.abs(targetRoot.Position.Y-startY)>25
 end
+-- (the bomb laid flat, its biggest face down: its thinnest side turned to point up)
+local function flatRotation(bomb)
+    local ok,size=pcall(function() return bomb.Size end)
+    if not ok or typeof(size)~="Vector3" then return CFrame.identity,1 end
+    if size.X<=size.Y and size.X<=size.Z then return CFrame.Angles(0,0,math.pi/2),size.X end
+    if size.Z<=size.X and size.Z<=size.Y then return CFrame.Angles(math.pi/2,0,0),size.Z end
+    return CFrame.identity,size.Y
+end
+-- (how far the top of their head and the soles of their feet are above / below their root,
+-- from their body parts only, so hats don't count)
+local function bodySpan(character,targetRoot)
+    local top,bottom=nil,nil
+    for _,part in ipairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            local ok,y,half=pcall(function() return part.Position.Y-targetRoot.Position.Y,part.Size.Y/2 end)
+            if ok then
+                top=math.max(top or -math.huge,y+half)
+                bottom=math.min(bottom or math.huge,y-half)
+            end
+        end
+    end
+    return top or 2.5,bottom or -3
+end
+local PASS_TIME=0.2
 local function runFling(target)
     local targetRoot=rootOf(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
@@ -20506,16 +20532,15 @@ local function runFling(target)
     if not mine then return false,"you are not alive" end
     -- only held under you when it isn't already yours, so a fling starts straight away
     clearRootReference(bomb)
-    if not owned(bomb) then claim(bomb,mine,0.6,0.03) end
+    if not owned(bomb) then claim(bomb,mine,0.6,0.05) end
     stats.flings=stats.flings+1
-    -- (sent 50000 studs a second downwards, a step can carry it past the map's fall limit before
-    -- it's put back on them: no limit while it flings, as Reset Player does)
-    local previousLimit
-    pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
     local startY=targetRoot.Position.Y
     local atTarget=os.clock()
     local hit=false
+    local rotation,thickness=flatRotation(bomb)
+    local top,bottom=bodySpan(target.Character,targetRoot)
+    local pass,passStarted=0,os.clock()
     local ok,err=pcall(function()
         while os.clock()-started<settings.duration and alive and runtimeAlive do
             if not usable(bomb) then
@@ -20527,7 +20552,8 @@ local function runFling(target)
                 bomb=fresh
                 mine=rootOf(LocalPlayer)
                 if not mine then break end
-                if not owned(bomb) and not claim(bomb,mine,0.5,0.03) then break end
+                if not owned(bomb) and not claim(bomb,mine,0.5,0.05) then break end
+                rotation,thickness=flatRotation(bomb)
                 atTarget=os.clock()
             end
             if not targetRoot.Parent or not aliveCharacter(target) then break end
@@ -20543,30 +20569,37 @@ local function runFling(target)
             -- (put there after each physics step, as Reset Player does)
             RunService.Heartbeat:Wait()
             if not targetRoot.Parent or not usable(bomb) then continue end
-            local head=target.Character and target.Character:FindFirstChild("Head")
-            local position=head and head.Parent and head.Position or targetRoot.Position+Vector3.new(0,5,0)
+            -- from just above the top of their head down to their feet, then again from the top
+            local progress=(os.clock()-passStarted)/PASS_TIME
+            if progress>=1 then
+                pass=pass+1;passStarted=os.clock();progress=0
+                if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
+            end
+            local height=(top+thickness/2)+((bottom+thickness/2)-(top+thickness/2))*progress
+            local position=targetRoot.Position+Vector3.new(0,height,0)
             if settings.prediction>0 then
                 local velocity=targetRoot.AssemblyLinearVelocity
                 local horizontal=Vector3.new(velocity.X,0,velocity.Z)
                 if horizontal.Magnitude>0.2 then position=position+horizontal.Unit*settings.prediction end
             end
+            -- (sent up, not down: pushed down, they're only pushed into the floor; spun about the
+            -- upright, so its big face stays down)
             pcall(function()
-                bomb.CFrame=CFrame.new(position)*CFrame.Angles(math.pi/2,0,0)
-                bomb.AssemblyLinearVelocity=Vector3.new(0,-POWER,0)
-                bomb.AssemblyAngularVelocity=Vector3.new(7500,7500,7500)
+                bomb.CFrame=CFrame.new(position)*rotation
+                bomb.AssemblyLinearVelocity=Vector3.new(0,POWER,0)
+                bomb.AssemblyAngularVelocity=Vector3.new(0,POWER,0)
             end)
+            local head=target.Character and target.Character:FindFirstChild("Head")
             for _=1,5 do
                 touch(bomb,targetRoot)
                 if head then touch(bomb,head) end
             end
-            setRootReference(bomb,targetRoot)
+            -- (every other pass attached like Reset Player, in between a plain hit, so if the game
+            -- doesn't take the attached bomb the plain one still lands)
+            if settings.attach and pass%2==0 then setRootReference(bomb,targetRoot) else clearRootReference(bomb) end
         end
     end)
     if bomb then clearRootReference(bomb) end
-    pcall(function()
-        local current=workspace.FallenPartsDestroyHeight
-        if current~=current and previousLimit~=nil then workspace.FallenPartsDestroyHeight=previousLimit end
-    end)
     -- park it back under you, still and ready for the next one
     if bomb and usable(bomb) then
         mine=rootOf(LocalPlayer)
@@ -20679,6 +20712,9 @@ toggle("Loop Bomb Fling Player(s)","bombFlingLoopSelected",function(value)
 end)
 section:AddSlider("Fling Duration",0.1,MAX_DURATION,settings.duration,function(value)
     settings.duration=math.clamp(tonumber(value) or 0.6,0.1,MAX_DURATION);SetCfg("bombFlingDuration",settings.duration)
+end)
+addToggle(section,"Attach Like Reset Player",settings.attach,function(value)
+    settings.attach=value==true;SetCfg("bombFlingAttach",settings.attach)
 end)
 section:AddSlider("Prediction Studs",0,20,settings.prediction,function(value)
     settings.prediction=math.clamp(tonumber(value) or 0,0,20);SetCfg("bombFlingPrediction",settings.prediction)
