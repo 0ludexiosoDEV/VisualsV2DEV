@@ -20076,18 +20076,18 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --  * "no bomb" is only reported after deploying one really failed
 --  * the bomb is thrown the way the game itself throws it (its Remote told where: a spot
 --    just in front of you, and 50, as the game's own toy and Bomb Jump send it; Fun Bomb's
---    empty throw never made one), then held under you first so it is yours (the game hands
---    a loose part to the player next to it, and only the bomb's owner can move it for
---    everyone); then it goes to the target in short bursts, coming back to you whenever it
---    stops being yours
+--    empty throw never made one), and goes straight to the target. After a fling it's
+--    parked under you while it's still yours, so it stays yours (the game hands a loose part
+--    to the player next to it, and only the bomb's owner can move it for everyone); one
+--    that's been handed to someone else is replaced by a new one taken out, once the toy can
+--    be thrown again
 --  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
 --    the physics step, touched against them. It's laid flat, biggest face down, and works its
 --    way slowly from just above their head down to their feet, over and over, sent down at full
 --    power and spinning about the upright. (Reset Player's other trick, setting the bomb's
 --    physics replication root to theirs, stopped it flinging at all.)
---  * moving and jumping players are led by your ping, each sweep a bit further or nearer ahead
---    of them than the last (so a wrong guess at their lag still crosses them), kept above the
---    floor under them
+--  * moving players: the bomb rides along a little ahead of where you see them (see
+--    LEAD_TRIES); standing ones have it right on them
 --  * the Fake Bomb can only be thrown every 22 s (Bomb Jump's throws count too): while it can't,
 --    you're told how long is left instead of a throw that puts out nothing
 local runtime=env.VisualsV2Runtime
@@ -20372,8 +20372,8 @@ local function failDeploy(reason)
     backoffUntil=os.clock()+math.min(8,0.75*2^(failures-1))
     return nil,reason
 end
--- Deploys a Fake Bomb under you and waits until it is yours. One at a time; a failure
--- waits longer before the next try.
+-- Takes out a Fake Bomb (thrown just in front of you) and waits until it turns up. One at a
+-- time; a failure waits longer before the next try.
 local function deployBomb()
     if deploying then
         local deadline=os.clock()+3
@@ -20464,25 +20464,10 @@ local function getBomb()
     local found=nearestOwnedBomb()
     if found then ownBomb=found;return found end
     -- (a Fake Bomb lying right by you that the game hasn't handed you yet, like one just
-    -- thrown: held under you, it's yours)
+    -- thrown: it soon will)
     found=nearestOwnedBomb(true,20,bombSignature(findBombTool()))
     if found then ownBomb=found;return found end
     return deployBomb()
-end
--- holds the bomb under you until the game hands it to you (or a moment passes)
-local function claim(bomb,root,limit,least)
-    local started=os.clock()
-    least=least or 0.08
-    repeat
-        if not usable(bomb) or not root.Parent then return false end
-        pcall(function()
-            bomb.CFrame=root.CFrame*CFrame.new(0,-2.4,0)
-            bomb.AssemblyLinearVelocity=Vector3.zero
-            bomb.AssemblyAngularVelocity=Vector3.zero
-        end)
-        RunService.Stepped:Wait()
-    until (owned(bomb) and os.clock()-started>least) or os.clock()-started>math.max(limit,least)
-    return owned(bomb)
 end
 
 -- ---------------------------------------------------------------- flinging
@@ -20525,8 +20510,21 @@ local function bodySpan(character,targetRoot)
     return top or 2.5,bottom or -3
 end
 local PASS_TIME=0.5
--- (each sweep is led a different amount ahead of a moving player: their real lag is a guess)
-local LEAD_STEPS={1,0.5,1.5}
+-- Moving players: Roblox sends physics only about 20 times a second and shows other players a
+-- good while behind where they are on their own screen, so the bomb rides along with a moving
+-- player a little ahead of where you see them, to be on them where they really are. How far
+-- ahead depends on both players' lag, which can't be read, so a fling tries a few distances in
+-- turn (LEAD_TRIES, round the one that worked last), staying on each a while, as a bomb kept on
+-- a player standing still only flings them after a moment; the one it was on when it last
+-- flung someone is kept for next time. (It can't be welded on: a weld you make exists only on
+-- your screen, and welded to them the bomb would stop being yours to send. Attaching it like
+-- Reset Player, sweeping it back and forth ahead of them and leaving it in their path all
+-- flung less.)
+local LEAD_TRIES={0,0.15,-0.1}
+local LEAD_DWELL=0.45
+local leadExtra=0.15
+-- (a moving player gets at least this long, so every distance is tried)
+local MOVING_TIME=1.5
 local function pingSeconds()
     local ok,value=pcall(function() return LocalPlayer:GetNetworkPing() end)
     return ok and tonumber(value) or 0.1
@@ -20539,6 +20537,24 @@ local function floorBelow(position,ignore)
     local ok,result=pcall(function() return workspace:Raycast(position+Vector3.new(0,2,0),Vector3.new(0,-60,0),params) end)
     return ok and result and result.Position.Y or nil
 end
+-- (a bomb within reach of you: one the game hasn't handed you yet, like one just taken out,
+-- soon will be)
+local function nearYou(part)
+    local mine=rootOf(LocalPlayer)
+    if not mine then return false end
+    local ok,distance=pcall(function() return (part.Position-mine.Position).Magnitude end)
+    return ok and distance<25
+end
+-- (a new bomb taken out in place of the one there is, once the toy can be thrown again: nil if
+-- it can't be yet, or none came out)
+local function takeOutAnother()
+    if cooldownLeft()>0.05 then return nil end
+    local previous=ownBomb
+    ownBomb=nil
+    local fresh=deployBomb()
+    if not fresh then ownBomb=previous end
+    return fresh
+end
 local function runFling(target)
     local targetRoot=rootOf(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
@@ -20547,10 +20563,18 @@ local function runFling(target)
         if os.clock()-lastMissingNotice>8 then lastMissingNotice=os.clock();notify("Bomb Fling: "..tostring(reason),3) end
         return false,reason
     end
-    local mine=rootOf(LocalPlayer)
-    if not mine then return false,"you are not alive" end
-    -- only held under you when it isn't already yours, so a fling starts straight away
-    if not owned(bomb) then claim(bomb,mine,0.6,0.05) end
+    if not rootOf(LocalPlayer) then return false,"you are not alive" end
+    -- (not yours to move any more, as when the last player it went after was handed it, and
+    -- not by you either: a new one taken out instead, once the toy can be thrown again)
+    if not owned(bomb) and not nearYou(bomb) then
+        local fresh=takeOutAnother()
+        if fresh then
+            bomb=fresh
+        elseif os.clock()-lastMissingNotice>8 then
+            lastMissingNotice=os.clock()
+            notify(("Bomb Fling: the bomb isn't yours to move right now (a new one can be taken out in %d s)"):format(math.ceil(cooldownLeft())),3)
+        end
+    end
     stats.flings=stats.flings+1
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
     -- put back on them: no limit while it flings, as Reset Player does)
@@ -20558,70 +20582,74 @@ local function runFling(target)
     pcall(function() previousLimit=workspace.FallenPartsDestroyHeight;workspace.FallenPartsDestroyHeight=0/0 end)
     local started=os.clock()
     local startY=targetRoot.Position.Y
-    local atTarget=os.clock()
-    local hit=false
+    local hit,hitAt=false,nil
     local rotation,thickness=flatRotation(bomb)
     local top,bottom=bodySpan(target.Character,targetRoot)
-    local passStarted,pass=os.clock(),0
+    local passStarted=os.clock()
     local spin=math.random()*math.pi*2
-    -- (their speed, measured as well, in case the game doesn't send it for other players)
-    local lastPosition,lastAt=targetRoot.Position,os.clock()
-    local measured=Vector3.zero
+    -- (where they've been over the last moment, for their speed in case the game doesn't send
+    -- it for other players)
+    local samples={}
+    local limit=settings.duration
+    -- (the distances tried for a moving player, to tell which one reached them)
+    local tried,lastLead={},0
+    local keptAt=os.clock()
     local ok,err=pcall(function()
-        while os.clock()-started<settings.duration and alive and runtimeAlive do
-            if not usable(bomb) then
-                -- it went off: put another one out straight away and carry on
-                bomb=nil
-                local fresh=deployBomb()
-                if not fresh then break end
-                bomb=fresh
-                mine=rootOf(LocalPlayer)
-                if not mine then break end
-                if not owned(bomb) and not claim(bomb,mine,0.5,0.05) then break end
-                rotation,thickness=flatRotation(bomb)
-                atTarget=os.clock()
+        while os.clock()-started<limit and alive and runtimeAlive do
+            if owned(bomb) then keptAt=os.clock() end
+            if not usable(bomb) or os.clock()-keptAt>1 then
+                -- gone (it went off), or handed to someone else a second ago without flinging
+                -- them: another one taken out straight away, and on with that
+                local fresh=takeOutAnother()
+                if fresh then
+                    bomb=fresh
+                    rotation,thickness=flatRotation(bomb)
+                elseif not usable(bomb) then
+                    break
+                end
+                keptAt=os.clock()
             end
             if not targetRoot.Parent or not aliveCharacter(target) then break end
-            if flung(targetRoot,startY) then hit=true;break end
-            -- no longer ours (the game gives a part to whoever is closest): back to you a moment
-            if os.clock()-atTarget>0.3 and not owned(bomb) then
-                mine=rootOf(LocalPlayer)
-                if not mine then break end
-                claim(bomb,mine,0.25)
-                atTarget=os.clock()
-            end
+            if flung(targetRoot,startY) then hit,hitAt=true,os.clock();break end
             -- (put there after each physics step, as Reset Player does)
             RunService.Heartbeat:Wait()
             if not targetRoot.Parent or not usable(bomb) then continue end
             -- from just above the top of their head down to their feet, then again from the top
             local progress=(os.clock()-passStarted)/PASS_TIME
             if progress>=1 then
-                passStarted=os.clock();progress=0;pass=pass+1
+                passStarted=os.clock();progress=0
                 if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
             end
             local now=os.clock()
             local current=targetRoot.Position
-            if now-lastAt>0.001 then
-                measured=measured:Lerp((current-lastPosition)/(now-lastAt),0.5)
-                lastPosition,lastAt=current,now
-            end
+            samples[#samples+1]={at=now,position=current}
+            while #samples>2 and now-samples[2].at>=0.25 do table.remove(samples,1) end
+            local measured=Vector3.zero
+            if now-samples[1].at>=0.08 then measured=(current-samples[1].position)/(now-samples[1].at) end
+            -- (the speed the game sends for them, unless it says they're still while they move;
+            -- measured over a quarter second, not frame to frame, where it jumps about)
             local velocity=targetRoot.AssemblyLinearVelocity
             local horizontal=Vector3.new(velocity.X,0,velocity.Z)
             local measuredHorizontal=Vector3.new(measured.X,0,measured.Z)
-            if measuredHorizontal.Magnitude>horizontal.Magnitude+2 then horizontal=measuredHorizontal end
+            if horizontal.Magnitude<1 and measuredHorizontal.Magnitude>3 then horizontal=measuredHorizontal end
             if horizontal.Magnitude>80 then horizontal=horizontal.Unit*80 end
-            local verticalSpeed=math.abs(velocity.Y)>math.abs(measured.Y) and velocity.Y or measured.Y
-            -- where they are on their own screen by the time the bomb gets there: what you see is
-            -- their lag behind, and the bomb takes yours to reach them
-            local lead=math.clamp(pingSeconds()*2+0.05,0.08,0.6)*LEAD_STEPS[pass%#LEAD_STEPS+1]
-            local predicted=current+horizontal*lead
+            local verticalSpeed=velocity.Y
+            if math.abs(verticalSpeed)<1 and math.abs(measured.Y)>3 then verticalSpeed=measured.Y end
+            -- moving: a little ahead of where you see them, by the distance being tried
+            local moving=horizontal.Magnitude>2
+            if moving then limit=math.max(limit,MOVING_TIME) end
+            local extra=math.clamp(leadExtra+LEAD_TRIES[math.floor((now-started)/LEAD_DWELL)%#LEAD_TRIES+1],0,0.8)
+            local lead=math.clamp(pingSeconds(),0,0.4)*2+extra
+            lastLead=lead
+            tried[#tried+1]={at=now,extra=extra,moving=moving}
+            local predicted=moving and current+horizontal*lead or current
             -- jumping or falling: along the arc, but never below the floor under them
             if math.abs(verticalSpeed)>2 then
-                local rise=verticalSpeed*lead-0.5*workspace.Gravity*lead*lead
-                local lowest=nil
                 local ignore={bomb}
                 if target.Character then ignore[#ignore+1]=target.Character end
                 if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+                local rise=verticalSpeed*lead-0.5*workspace.Gravity*lead*lead
+                local lowest=nil
                 local floorY=floorBelow(predicted,ignore)
                 if floorY then lowest=floorY-bottom end
                 predicted=predicted+Vector3.new(0,rise,0)
@@ -20651,16 +20679,30 @@ local function runFling(target)
             if current~=current then workspace.FallenPartsDestroyHeight=previousLimit end
         end)
     end
-    -- park it back under you, still and ready for the next one
+    -- still yours: parked under you, stopped, so the game keeps it yours (it hands a loose
+    -- part to whoever is nearest) and the next fling can use it straight away instead of
+    -- waiting out the toy's cooldown for a new one. Not yours any more: moving it would only
+    -- show on your screen, so it's left where it is.
     if bomb and usable(bomb) then
-        mine=rootOf(LocalPlayer)
-        if mine then pcall(function()
-            bomb.CFrame=mine.CFrame*CFrame.new(0,-2.4,0)
+        local mine=rootOf(LocalPlayer)
+        pcall(function()
+            if mine and owned(bomb) then bomb.CFrame=mine.CFrame*CFrame.new(0,-2.4,0) end
             bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
-        end) end
+        end)
     end
     if not ok then stats.lastError=tostring(err) end
-    if hit then stats.hits=stats.hits+1 end
+    if hit then
+        stats.hits=stats.hits+1
+        -- (the distance it was on when it reached them, as near as can be told: they're seen
+        -- flung about as long after as it was ahead of them; kept for next time)
+        local at=hitAt-lastLead
+        for index=#tried,1,-1 do
+            if tried[index].at<=at then
+                if tried[index].moving then leadExtra=tried[index].extra end
+                break
+            end
+        end
+    end
     return hit
 end
 -- Flings run one after another from a queue on their own thread, so pressing a button
@@ -20779,26 +20821,90 @@ local function autoFling(name,key,finder)
 end
 autoFling("Sheriff","bombFlingAutoSheriff",findSheriff)
 autoFling("Murderer","bombFlingAutoMurderer",findMurderer)
+-- Click Fling. (It aimed its ray with the tap's position as if measured from the very top of
+-- the screen, but taps are measured from below the top bar, so the ray went over the player's
+-- head; and it needed the ray to land exactly on them, a few pixels on a phone.)
 local clickConnections={}
+local function playerFromPart(part)
+    local current=part
+    while current and current~=workspace do
+        if current:IsA("Model") then
+            local plr=Players:GetPlayerFromCharacter(current)
+            if plr then return plr end
+        end
+        current=current.Parent
+    end
+end
+-- (a visible button or text box at that spot: the tap was for it)
+local function buttonAt(x,y)
+    local containers={LocalPlayer:FindFirstChildOfClass("PlayerGui")}
+    pcall(function() containers[#containers+1]=game:GetService("CoreGui") end)
+    for _,container in ipairs(containers) do
+        local ok,objects=pcall(function() return container:GetGuiObjectsAtPosition(x,y) end)
+        if ok and type(objects)=="table" then
+            for _,object in ipairs(objects) do
+                if object.Visible and (object:IsA("GuiButton") or object:IsA("TextBox")) then return true end
+            end
+        end
+    end
+    return false
+end
+-- The player at a spot on the screen: the one the tap lands on, or else the one drawn nearest
+-- to it, within about a finger's width. (viewportSpace: x, y are measured from the very top of
+-- the screen, as the mouse location is; otherwise from below the top bar, as taps are.)
+local function playerAt(x,y,viewportSpace)
+    local camera=workspace.CurrentCamera
+    if not camera then return nil end
+    local ray=viewportSpace and camera:ViewportPointToRay(x,y) or camera:ScreenPointToRay(x,y)
+    local ignore={}
+    if LocalPlayer.Character then ignore[#ignore+1]=LocalPlayer.Character end
+    if ownBomb then ignore[#ignore+1]=ownBomb end
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances=ignore
+    local ok,result=pcall(function() return workspace:Raycast(ray.Origin,ray.Direction*2000,params) end)
+    local hitPlayer=ok and result and playerFromPart(result.Instance)
+    if hitPlayer and hitPlayer~=LocalPlayer then return hitPlayer end
+    local tap=Vector2.new(x,y)
+    local best,bestDistance=nil,math.clamp(camera.ViewportSize.Y*0.08,40,100)
+    for _,plr in ipairs(others()) do
+        for _,name in ipairs({"HumanoidRootPart","Head","Torso","UpperTorso"}) do
+            local part=plr.Character and plr.Character:FindFirstChild(name)
+            if part and part:IsA("BasePart") then
+                local point,visible
+                if viewportSpace then point,visible=camera:WorldToViewportPoint(part.Position)
+                else point,visible=camera:WorldToScreenPoint(part.Position) end
+                local distance=(Vector2.new(point.X,point.Y)-tap).Magnitude
+                if visible and distance<bestDistance then best,bestDistance=plr,distance end
+            end
+        end
+    end
+    return best
+end
 toggle("Click Fling","bombFlingClick",function(value)
     for _,connection in ipairs(clickConnections) do connection:Disconnect() end
     table.clear(clickConnections)
     if not value then return end
-    local function pressed(input,processed)
-        if processed then return end
-        if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
-        local camera=workspace.CurrentCamera
-        if not camera then return end
-        local ray=camera:ViewportPointToRay(input.Position.X,input.Position.Y)
-        local params=RaycastParams.new()
-        params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={LocalPlayer.Character}
-        local result=workspace:Raycast(ray.Origin,ray.Direction*500,params)
-        local model=result and result.Instance and result.Instance:FindFirstAncestorOfClass("Model")
-        local plr=model and Players:GetPlayerFromCharacter(model)
-        if plr and plr~=LocalPlayer then fling(plr) end
+    local function chosen(plr)
+        if plr and plr~=LocalPlayer and not isWhitelisted(plr) then
+            notify("Bomb Fling: "..plr.Name,1)
+            fling(plr)
+        end
     end
-    clickConnections[1]=UserInputService.InputBegan:Connect(pressed)
+    -- mouse: a left click that wasn't on a button
+    clickConnections[#clickConnections+1]=UserInputService.InputBegan:Connect(function(input,processed)
+        if processed or input.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+        local location=UserInputService:GetMouseLocation()
+        chosen(playerAt(location.X,location.Y,true))
+    end)
+    -- touch: a tap (not a drag to turn the camera) that wasn't on a button. (The touch controls
+    -- can mark taps on the world as handled too, so that alone doesn't skip a tap.)
+    clickConnections[#clickConnections+1]=UserInputService.TouchTap:Connect(function(positions,processed)
+        local position=type(positions)=="table" and positions[1]
+        if not position then return end
+        if processed and buttonAt(position.X,position.Y) then return end
+        chosen(playerAt(position.X,position.Y,false))
+    end)
 end)
 toggle("Fling Aura","bombFlingAura",function(value)
     if not value then stopLoop("aura");return end
