@@ -20569,8 +20569,9 @@ local function measure(track,position,now)
     return now-first.at>=0.05 and (position-first.position)/(now-first.at) or Vector3.zero
 end
 -- Where a moving player will be, from their last second (PATH_TIME): round the arc if they're
--- turning steadily one way, as round a circle; if they're weaving, halfway between straight on
--- and the middle of where they've been heading; otherwise straight on. Tried in simulation on
+-- turning steadily one way, as round a circle; if they're weaving, most of the way along to
+-- straight on (WEAVE_ALONG) but halfway over to the middle of where they've been heading;
+-- otherwise straight on. Tried in simulation on
 -- straight runs, circles, zig-zags and random turns, with the lead 0.12 s out either way and their
 -- position jittering 0.2 studs, they were touched 1.1 s in on average with 4% not touched in 4 s.
 -- Following every turn as if it went on (as the test before this did) took 3.3 s, with 62% not
@@ -20579,9 +20580,13 @@ end
 -- circling at 3 to 4 radians a second (as the test target did) turns further than the 1.4 it used
 -- to be in the time the bomb is ahead, and the bomb lagged behind them round the circle; at 2.2,
 -- simulation touched a 4 radians a second circle in about a second, and did no worse on straight
--- runs, zig-zags or random turns.
+-- runs, zig-zags or random turns. Halfway along to straight on as well (as it was), weaving put
+-- the bomb 2.6 to 3.2 studs behind the test target on its screen in all four sessions that logged
+-- it, on them 11% of the time; three quarters of the way along it would have been 18%, with
+-- simulated regular zig-zags touched in 1.2 s instead of 1.1 s (all the way: 18%, but 1.5 s).
 local PATH_TIME=1
 local ARC_LIMIT=2.2
+local WEAVE_ALONG=0.75
 -- Every other player's last MOTION_TIME seconds (where they were, which way they were going and
 -- how fast they were rising), kept all the time for the ones within FAR_AWAY studs, so a fling
 -- knows from its start whether they're weaving, turning or hopping (or still flying from the last
@@ -20788,7 +20793,13 @@ local function predictAhead(path,now,current,horizontal,lead)
     local straight=current+horizontal*lead
     if weaving(path,now) then
         local middle=middleAhead(path,now,current,lead)
-        if middle then return (straight+middle)/2,"weave",0 end
+        if middle then
+            local forward=horizontal.Unit
+            local offset=middle-current
+            local along=offset:Dot(forward)
+            local reach=WEAVE_ALONG*horizontal.Magnitude*lead+(1-WEAVE_ALONG)*along
+            return current+forward*reach+(offset-forward*along)/2,"weave",0
+        end
     end
     return straight,"straight",0
 end
@@ -21408,7 +21419,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d lead=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,baseLead(),cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: halfway to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; then how it was worked out (straight / turn: round a steady turn / weave: most of the way to straight on, halfway over to the middle of their weaving; +hop: kept just over a hopper's feet at the top of their jump) and the turn (radians/s); moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
