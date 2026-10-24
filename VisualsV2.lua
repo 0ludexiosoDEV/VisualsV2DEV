@@ -20177,11 +20177,26 @@ local function bombLike(part)
     return not inCharacterOrTool(part)
 end
 -- (a bomb counts as fallen out of the world only right at the map's own fall limit: it had to be
--- 25 studs above it, so on maps built close to that limit every bomb counted as gone)
-local function usable(part)
-    if not part or not part.Parent or not part:IsDescendantOf(workspace) or part.Anchored then return false end
+-- 25 studs above it, so on maps built close to that limit every bomb counted as gone). With no
+-- real limit (anti-void scripts, ODH's among them, set it to NaN or -inf) there's nothing to fall
+-- out of: a NaN limit made every bomb count as gone, so none thrown was ever kept.
+local function fallLimit()
+    local ok,limit=pcall(function() return workspace.FallenPartsDestroyHeight end)
+    if not ok or type(limit)~="number" or limit~=limit or math.abs(limit)==math.huge then return nil end
+    return limit
+end
+local function unusableWhy(part)
+    if not part or not part.Parent then return "it was removed" end
+    if not part:IsDescendantOf(workspace) then return "it was moved out of the map" end
+    if part.Anchored then return "it's anchored" end
     local ok,y=pcall(function() return part.Position.Y end)
-    return ok and y>(workspace.FallenPartsDestroyHeight+2)
+    if not ok or y~=y then return "its position can't be read" end
+    local limit=fallLimit()
+    if limit and y<=limit+2 then return ("it's at the map's fall limit (height %d, limit %d)"):format(math.floor(y),math.floor(limit)) end
+    return nil
+end
+local function usable(part)
+    return unusableWhy(part)==nil
 end
 local function owned(part)
     -- 0 means this client is simulating the part (it's ours to move)
@@ -20389,10 +20404,13 @@ local function deployBomb()
         local tools=runtime.AutoGetTools
         if tools and type(tools.RequestOrder)=="function" then pcall(tools.RequestOrder) end
         local deadline=os.clock()+3
+        -- (one that was found but couldn't be kept, and why, for the notice)
+        local passedOver=nil
         repeat
             if not (ownBomb and usable(ownBomb)) then
                 local found=ThrownBomb.Find(thrownWatch)
-                if found and usable(found) then ownBomb=found;bombs[found]=bombs[found] or os.clock() end
+                if found and usable(found) then ownBomb=found;bombs[found]=bombs[found] or os.clock()
+                elseif found then passedOver=describePart(found,bombScore(found,thrownWatch.signature)).." was passed over: "..tostring(unusableWhy(found)) end
             end
             if ownBomb and usable(ownBomb) then break end
             task.wait(0.05)
@@ -20402,7 +20420,7 @@ local function deployBomb()
             if found then ownBomb=found end
         end
         if not (ownBomb and usable(ownBomb)) then
-            result,reason=failDeploy("the thrown bomb wasn't found (near you: "..tostring(ThrownBomb.lastSeen)..")");return
+            result,reason=failDeploy("the thrown bomb wasn't found (near you: "..tostring(ThrownBomb.lastSeen)..")"..(passedOver and ("; "..passedOver) or ""));return
         end
         failures=0
         result=ownBomb
@@ -22037,10 +22055,14 @@ end
 -- (a bomb that's still out: in the map, and not right at its fall limit. It had to be 25 studs
 -- above that limit, so on maps built close to it every bomb that was found counted as gone, and
 -- none was ever kept: the bombs in MM2, and in MMV on some maps)
+-- With no real limit (anti-void scripts set it to NaN or -inf) there's nothing to fall out of.
 local function bombAlive(part)
     if not part or not part.Parent or not part:IsDescendantOf(workspace) then return false end
     local ok,y=pcall(function() return part.Position.Y end)
-    return ok and y>(workspace.FallenPartsDestroyHeight+2)
+    if not ok or y~=y then return false end
+    local limit=workspace.FallenPartsDestroyHeight
+    if type(limit)~="number" or limit~=limit or math.abs(limit)==math.huge then return true end
+    return y>limit+2
 end
 -- (why a bomb isn't still out, for the status)
 local function bombGoneWhy(part)
@@ -22051,7 +22073,7 @@ local function bombGoneWhy(part)
         elseif not part:IsDescendantOf(workspace) then why="it was moved out of the map (into "..part.Parent.Name..")"
         else
             local limit=workspace.FallenPartsDestroyHeight
-            if part.Position.Y<=limit+2 then why=("it fell out of the map (height %d, the map's limit is %d)"):format(math.floor(part.Position.Y),math.floor(limit)) end
+            if limit==limit and math.abs(limit)~=math.huge and part.Position.Y<=limit+2 then why=("it fell out of the map (height %d, the map's limit is %d)"):format(math.floor(part.Position.Y),math.floor(limit)) end
         end
     end)
     return why
