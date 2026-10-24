@@ -20094,10 +20094,10 @@ local runtime=env.VisualsV2Runtime
 local ReplicatedStorage=game:GetService("ReplicatedStorage")
 local section=mainTab:AddSection("Bomb Fling","Utilities")
 local POWER=50000
-local MAX_DURATION=4
+local MIN_DURATION,MAX_DURATION=1,4
 local LOOP_DELAY=2.5
 local settings={
-    duration=math.clamp(tonumber(C("bombFlingDuration",0.6)) or 0.6,0.1,MAX_DURATION),
+    duration=math.clamp(tonumber(C("bombFlingDuration",MIN_DURATION)) or MIN_DURATION,MIN_DURATION,MAX_DURATION),
     auraDistance=math.clamp(tonumber(C("bombFlingAuraStuds",15)) or 15,5,50),
 }
 local selectedPlayers,whitelist={},{}
@@ -20106,6 +20106,33 @@ local alive=true
 local stats={deploys=0,deployFailures=0,flings=0,hits=0,lastError=nil}
 
 local function notify(text,seconds) pcall(shared.Notify,text,seconds or 2) end
+-- Fling report: what happens in each fling, to work out what to change. Lines are stamped with
+-- the server's clock (the same on every player's screen, so they line up with the test target
+-- logger run on another account), the last REPORT_LINES are kept, and Copy Fling Report copies
+-- them (and saves them to a file).
+local REPORT_LINES=2000
+local reportLines,reportNames={},{}
+local function serverTime()
+    local ok,value=pcall(function() return workspace:GetServerTimeNow() end)
+    return ok and tonumber(value) or os.clock()
+end
+local function note(text)
+    reportLines[#reportLines+1]=("%.3f %s"):format(serverTime()%1000,text)
+    if #reportLines>REPORT_LINES then table.remove(reportLines,1) end
+end
+-- (players by number, not by name)
+local function reportName(plr)
+    if not reportNames[plr] then
+        local count=0
+        for _ in pairs(reportNames) do count=count+1 end
+        reportNames[plr]="P"..(count+1)
+    end
+    return reportNames[plr]
+end
+local function receiveAge(part)
+    local ok,age=pcall(function() return part.ReceiveAge end)
+    return ok and tonumber(age) or -1
+end
 local function isWhitelisted(plr) return whitelist[plr.UserId]==true end
 local function rootOf(plr)
     local character=plr and plr.Character
@@ -20370,6 +20397,7 @@ local function failDeploy(reason)
     stats.deployFailures=stats.deployFailures+1
     stats.lastError=reason
     backoffUntil=os.clock()+math.min(8,0.75*2^(failures-1))
+    note("TAKEOUT failed: "..tostring(reason))
     return nil,reason
 end
 -- Takes out a Fake Bomb (thrown just in front of you) and waits until it turns up. One at a
@@ -20411,6 +20439,7 @@ local function deployBomb()
         local position=root.Position+look*4-Vector3.new(0,3,0)
         lastDeploy.at,lastDeploy.position=os.clock(),position
         stats.deploys=stats.deploys+1
+        note("TAKEOUT thrown")
         local thrownWatch=ThrownBomb.Begin(tool,position)
         -- in hand (as long as Bomb Jump keeps it there, or until the bomb shows up), thrown the
         -- way the game throws it, then back with what you held back in your hand
@@ -20447,6 +20476,7 @@ local function deployBomb()
         end
         throwReadyAt=lastDeploy.at+THROW_COOLDOWN
         failures=0
+        note(("TAKEOUT got %s own=%d ra=%.2f"):format(describePart(ownBomb,bombScore(ownBomb,thrownWatch.signature)),owned(ownBomb) and 1 or 0,receiveAge(ownBomb)))
         result=ownBomb
     end)
     deploying=false
@@ -20564,9 +20594,11 @@ local function runFling(target)
         return false,reason
     end
     if not rootOf(LocalPlayer) then return false,"you are not alive" end
+    local label=reportName(target)
     -- (not yours to move any more, as when the last player it went after was handed it, and
     -- not by you either: a new one taken out instead, once the toy can be thrown again)
     if not owned(bomb) and not nearYou(bomb) then
+        note(("NOTYOURS %s ra=%.2f cooldown=%.0f"):format(label,receiveAge(bomb),cooldownLeft()))
         local fresh=takeOutAnother()
         if fresh then
             bomb=fresh
@@ -20576,6 +20608,13 @@ local function runFling(target)
         end
     end
     stats.flings=stats.flings+1
+    do
+        local mine=rootOf(LocalPlayer)
+        local velocity=targetRoot.AssemblyLinearVelocity
+        note(("START %s dist=%.0f speed=%.1f own=%d near=%d ra=%.2f ping=%dms duration=%d leadExtra=%.2f"):format(label,
+            mine and (targetRoot.Position-mine.Position).Magnitude or -1,Vector3.new(velocity.X,0,velocity.Z).Magnitude,
+            owned(bomb) and 1 or 0,nearYou(bomb) and 1 or 0,receiveAge(bomb),math.floor(pingSeconds()*1000),settings.duration,leadExtra))
+    end
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
     -- put back on them: no limit while it flings, as Reset Player does)
     local previousLimit=nil
@@ -20594,10 +20633,18 @@ local function runFling(target)
     -- (the distances tried for a moving player, to tell which one reached them)
     local tried,lastLead={},0
     local keptAt=os.clock()
+    local wasYours=owned(bomb)
+    local lastSample=-math.huge
     local ok,err=pcall(function()
         while os.clock()-started<limit and alive and runtimeAlive do
-            if owned(bomb) then keptAt=os.clock() end
+            local yours=owned(bomb)
+            if yours~=wasYours then
+                note(("OWN %s %s ra=%.2f"):format(label,yours and "yours" or "not yours",receiveAge(bomb)))
+                wasYours=yours
+            end
+            if yours then keptAt=os.clock() end
             if not usable(bomb) or os.clock()-keptAt>1 then
+                note(("REPLACE %s %s"):format(label,usable(bomb) and "not yours for 1 s" or ("gone: "..tostring(unusableWhy(bomb)))))
                 -- gone (it went off), or handed to someone else a second ago without flinging
                 -- them: another one taken out straight away, and on with that
                 local fresh=takeOutAnother()
@@ -20609,8 +20656,12 @@ local function runFling(target)
                 end
                 keptAt=os.clock()
             end
-            if not targetRoot.Parent or not aliveCharacter(target) then break end
-            if flung(targetRoot,startY) then hit,hitAt=true,os.clock();break end
+            if not targetRoot.Parent or not aliveCharacter(target) then note(("GONE %s (died or left)"):format(label));break end
+            if flung(targetRoot,startY) then
+                hit,hitAt=true,os.clock()
+                note(("HIT %s after %.2fs"):format(label,hitAt-started))
+                break
+            end
             -- (put there after each physics step, as Reset Player does)
             RunService.Heartbeat:Wait()
             if not targetRoot.Parent or not usable(bomb) then continue end
@@ -20671,8 +20722,31 @@ local function runFling(target)
                 touch(bomb,targetRoot)
                 if head then touch(bomb,head) end
             end
+            -- (for the report: where the bomb was put, from them as you see them, along the way
+            -- they're moving, or the way they face standing still)
+            if now-lastSample>=0.05 then
+                lastSample=now
+                local look=targetRoot.CFrame.LookVector
+                local forward=horizontal.Magnitude>0.5 and horizontal.Unit or Vector3.new(look.X,0,look.Z)
+                forward=forward.Magnitude>0.01 and forward.Unit or Vector3.new(0,0,-1)
+                local offset=position-current
+                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f own=%d ra=%.2f their=%.0f"):format(label,
+                    offset:Dot(forward),offset:Dot(Vector3.new(-forward.Z,0,forward.X)),offset.Y,horizontal.Magnitude,
+                    moving and lead or 0,yours and 1 or 0,receiveAge(bomb),targetRoot.AssemblyLinearVelocity.Magnitude))
+            end
         end
     end)
+    local endedAt=os.clock()
+    note(("END %s hit=%d after %.2fs%s"):format(label,hit and 1 or 0,endedAt-started,ok and "" or (" error: "..tostring(err))))
+    -- (flung after the fling ended, too late to be seen in it: watched a moment longer)
+    if not hit and targetRoot.Parent then
+        task.spawn(function()
+            while os.clock()-endedAt<3 and targetRoot.Parent and alive do
+                if flung(targetRoot,startY) then note(("LATEHIT %s %.2fs after the end"):format(label,os.clock()-endedAt));break end
+                task.wait(0.05)
+            end
+        end)
+    end
     if previousLimit~=nil then
         pcall(function()
             local current=workspace.FallenPartsDestroyHeight
@@ -20685,10 +20759,12 @@ local function runFling(target)
     -- show on your screen, so it's left where it is.
     if bomb and usable(bomb) then
         local mine=rootOf(LocalPlayer)
+        local yours=owned(bomb)
         pcall(function()
-            if mine and owned(bomb) then bomb.CFrame=mine.CFrame*CFrame.new(0,-2.4,0) end
+            if mine and yours then bomb.CFrame=mine.CFrame*CFrame.new(0,-2.4,0) end
             bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
         end)
+        note((mine and yours) and "PARK under you" or ("LEFT where it is (not yours, ra=%.2f)"):format(receiveAge(bomb)))
     end
     if not ok then stats.lastError=tostring(err) end
     if hit then
@@ -20763,7 +20839,7 @@ runtime.BombFling={Fling=fling,GetBomb=getBomb,
     local count=0
     for _ in pairs(bombs) do count=count+1 end
     local copy=table.clone(stats);copy.tracked=count;copy.ownBomb=ownBomb and ownBomb:GetFullName() or nil
-    copy.queue=#flingQueue;copy.flinging=flinging
+    copy.queue=#flingQueue;copy.flinging=flinging;copy.reportLines=#reportLines
     return copy
 end}
 
@@ -20803,8 +20879,8 @@ end
 toggle("Loop Bomb Fling Player(s)","bombFlingLoopSelected",function(value)
     if value then startLoop("selected",flingSelected) else stopLoop("selected") end
 end)
-section:AddSlider("Fling Duration",0.1,MAX_DURATION,settings.duration,function(value)
-    settings.duration=math.clamp(tonumber(value) or 0.6,0.1,MAX_DURATION);SetCfg("bombFlingDuration",settings.duration)
+section:AddSlider("Fling Duration",MIN_DURATION,MAX_DURATION,settings.duration,function(value)
+    settings.duration=math.clamp(tonumber(value) or MIN_DURATION,MIN_DURATION,MAX_DURATION);SetCfg("bombFlingDuration",settings.duration)
 end)
 local function autoFling(name,key,finder)
     local recent={}
@@ -20924,6 +21000,29 @@ section:AddPlayerDropdown("Add to Whitelist",function(plr)
     if typeof(plr)=="Instance" and plr~=LocalPlayer then whitelist[plr.UserId]=true;notify("Bomb Fling: "..plr.Name.." whitelisted",2) end
 end)
 section:AddButton("Clear Whitelist",function() table.clear(whitelist) end)
+-- (the fling report: copied, and saved to a file, to send back)
+local reportClipboard=type(setclipboard)=="function" and setclipboard or env.setclipboard
+local reportWrite=type(writefile)=="function" and writefile or env.writefile
+section:AddButton("Copy Fling Report",function()
+    local executor="?"
+    pcall(function() executor=tostring(identifyexecutor()) end)
+    local text=table.concat({
+        "VisualsV2 Bomb Fling report",
+        ("executor=%s ping=%dms duration=%d leadExtra=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,leadExtra,cooldownLeft()),
+        ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
+        "time = the server's clock (the same on every screen). S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; own = the bomb is yours (ra = seconds since the game last sent it to you, 0 = yours); their = their total speed",
+        "",
+    },"\n")..table.concat(reportLines,"\n")
+    local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
+    local saved=type(reportWrite)=="function" and pcall(reportWrite,"VisualsV2_BombFlingReport.txt",text)
+    local where=copied and (saved and "copied, and saved to VisualsV2_BombFlingReport.txt" or "copied")
+        or (saved and "saved to VisualsV2_BombFlingReport.txt" or "couldn't be copied or saved")
+    notify(("Bomb Fling report (%d lines) %s"):format(#reportLines,where),4)
+end)
+section:AddButton("Clear Fling Report",function()
+    table.clear(reportLines);table.clear(reportNames)
+    notify("Bomb Fling report cleared",2)
+end)
 
 -- Anti Bomb Fling (Better ODH): on your screen, other players' bombs and anything loose
 -- spinning or flying at you stop colliding with you. Everything goes back when it's off.
@@ -21044,7 +21143,7 @@ runtime.RegisterReset(function()
     if anti.connection then anti.connection:Disconnect();anti.connection=nil end
     for part in pairs(anti.changed) do release(part) end
     for _,spec in ipairs(BIND_KEYS) do BindableButtons:DeleteBButton(spec.id) end
-    settings.duration,settings.auraDistance=0.6,15
+    settings.duration,settings.auraDistance=MIN_DURATION,15
     if not runtimeAlive then
         alive=false
         watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect()
