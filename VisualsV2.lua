@@ -20074,13 +20074,11 @@ end,"Section \"Bomb Jump Clutch / Gold Bomb Jump+\"")
 --  * a bomb is only deployed when there is none, one request at a time, with a growing
 --    wait after a failed try, so the toy isn't equipped and unequipped over and over
 --  * "no bomb" is only reported after deploying one really failed
---  * the bomb is thrown the way the game itself throws it (its Remote told where: a spot
---    just in front of you, and 50, as the game's own toy and Bomb Jump send it; Fun Bomb's
---    empty throw never made one), and goes straight to the target. After a fling it's
---    parked under you while it's still yours, so it stays yours (the game hands a loose part
---    to the player next to it, and only the bomb's owner can move it for everyone); one
---    that's been handed to someone else is replaced by a new one taken out, once the toy can
---    be thrown again
+--  * the bomb is thrown the way the game itself throws it (its Remote told where: at your
+--    feet, and 50, as the game's own toy and Bomb Jump send it; Fun Bomb's empty throw never
+--    made one), watched a moment to be sure it's yours, and carried along just under you
+--    between flings so it stays yours (see CARRY_DEPTH); one given to someone else is replaced
+--    by a new one taken out, once the toy can be thrown again
 --  * the bomb goes on them the way Reset Player (aux0on) puts you on them: every frame after
 --    the physics step, touched against them. It's laid flat, biggest face down, and works its
 --    way slowly from just above their head down to their feet, over and over, sent down at full
@@ -20433,10 +20431,9 @@ local function deployBomb()
         local backpack=LocalPlayer:FindFirstChildOfClass("Backpack")
         local held=character:FindFirstChildOfClass("Tool")
         if held==tool then held=nil end
-        -- (thrown down just in front of you, so it lands right by you)
-        local look=Vector3.new(root.CFrame.LookVector.X,0,root.CFrame.LookVector.Z)
-        look=look.Magnitude>0.05 and look.Unit or Vector3.new(0,0,-1)
-        local position=root.Position+look*4-Vector3.new(0,3,0)
+        -- (thrown down at your feet: thrown ahead of you, it flew off at the throw's speed and
+        -- was given to whoever it rolled nearest, often the player about to be flung)
+        local position=root.Position-Vector3.new(0,3,0)
         lastDeploy.at,lastDeploy.position=os.clock(),position
         stats.deploys=stats.deploys+1
         note("TAKEOUT thrown")
@@ -20445,7 +20442,7 @@ local function deployBomb()
         -- way the game throws it, then back with what you held back in your hand
         pcall(function() tool.Parent=character end)
         RunService.Heartbeat:Wait()
-        pcall(function() throw:FireServer(CFrame.new(position),50) end)
+        pcall(function() throw:FireServer(CFrame.new(position)*CFrame.Angles(-math.pi/2,0,0),50) end)
         local inHand=os.clock()+0.5
         repeat task.wait(0.03) until (ownBomb and usable(ownBomb)) or os.clock()>inHand
         pcall(function() if tool.Parent==character then tool.Parent=backpack or tool.Parent end end)
@@ -20476,7 +20473,8 @@ local function deployBomb()
         end
         throwReadyAt=lastDeploy.at+THROW_COOLDOWN
         failures=0
-        note(("TAKEOUT got %s own=%d ra=%.2f"):format(describePart(ownBomb,bombScore(ownBomb,thrownWatch.signature)),owned(ownBomb) and 1 or 0,receiveAge(ownBomb)))
+        note(("TAKEOUT got %s %.0f studs from you, ra=%.2f"):format(describePart(ownBomb,bombScore(ownBomb,thrownWatch.signature)),
+            (ownBomb.Position-root.Position).Magnitude,receiveAge(ownBomb)))
         result=ownBomb
     end)
     deploying=false
@@ -20512,9 +20510,18 @@ local function touch(a,b)
     pcall(touchInterest,a,b,0)
     pcall(touchInterest,a,b,1)
 end
-local function flung(targetRoot,startY)
-    local velocity=targetRoot.AssemblyLinearVelocity
-    return velocity.Magnitude>140 or math.abs(targetRoot.Position.Y-startY)>25
+-- (their speed from where they've been over the last quarter second: the speed the game sends
+-- for a flung player can read 0)
+local function measure(track,position,now)
+    track[#track+1]={at=now,position=position}
+    while #track>2 and now-track[2].at>=0.25 do table.remove(track,1) end
+    local first=track[1]
+    return now-first.at>=0.05 and (position-first.position)/(now-first.at) or Vector3.zero
+end
+-- (flung: going far faster than anyone runs, or well off the height they started at)
+local function flungNow(targetRoot,startY,measured)
+    return targetRoot.AssemblyLinearVelocity.Magnitude>140 or Vector3.new(measured.X,0,measured.Z).Magnitude>45
+        or measured.Magnitude>100 or math.abs(targetRoot.Position.Y-startY)>25
 end
 -- (the bomb laid flat, its biggest face down: its thinnest side turned to point up)
 local function flatRotation(bomb)
@@ -20544,15 +20551,15 @@ local PASS_TIME=0.5
 -- good while behind where they are on their own screen, so the bomb rides along with a moving
 -- player a little ahead of where you see them, to be on them where they really are. How far
 -- ahead depends on both players' lag, which can't be read, so a fling tries a few distances in
--- turn (LEAD_TRIES, round the one that worked last), staying on each a while, as a bomb kept on
--- a player standing still only flings them after a moment; the one it was on when it last
--- flung someone is kept for next time. (It can't be welded on: a weld you make exists only on
--- your screen, and welded to them the bomb would stop being yours to send. Attaching it like
--- Reset Player, sweeping it back and forth ahead of them and leaving it in their path all
--- flung less.)
-local LEAD_TRIES={0,0.15,-0.1}
+-- turn (LEAD_TRIES, round the one that worked last), staying on each a while (the bomb takes
+-- about a third of a second to reach their screen); the one it was on when it last flung
+-- someone is kept for next time. In the test logs a walking player was flung with it about a
+-- quarter of a second ahead. (It can't be welded on: a weld you make exists only on your screen,
+-- and welded to them the bomb would stop being yours to send. Attaching it like Reset Player,
+-- sweeping it back and forth ahead of them and leaving it in their path all flung less.)
+local LEAD_TRIES={0,0.1,-0.08}
 local LEAD_DWELL=0.45
-local leadExtra=0.15
+local leadExtra=0.25
 -- (a moving player gets at least this long, so every distance is tried)
 local MOVING_TIME=1.5
 local function pingSeconds()
@@ -20567,13 +20574,46 @@ local function floorBelow(position,ignore)
     local ok,result=pcall(function() return workspace:Raycast(position+Vector3.new(0,2,0),Vector3.new(0,-60,0),params) end)
     return ok and result and result.Position.Y or nil
 end
--- (a bomb within reach of you: one the game hasn't handed you yet, like one just taken out,
--- soon will be)
-local function nearYou(part)
+-- Keeping the bomb yours. What the test logs showed: the game gives a loose bomb to the player
+-- nearest it, only that player's moves of it reach anyone else, and a bomb that's yours flings a
+-- player the moment it reaches them on their screen. Every miss was a bomb that wasn't yours:
+-- one thrown ahead of you flew off and was given to the player it rolled nearest (the one about
+-- to be flung), and one left lying where you'd been went to whoever came by; after that it moved
+-- only on your screen. And your screen can't tell while you move it: it then always says it's
+-- yours. So it's thrown at your feet, only used once it's been watched a moment untouched and
+-- found yours, and carried along just under you between flings (below the floor, out of
+-- sight), so it stays the bomb nearest you wherever you go.
+local CARRY_DEPTH=5
+-- (the bomb last found yours, and kept so since)
+local verified=nil
+-- (no other player nearer it than you: the one the game gives it to)
+local function nearestYou(part)
     local mine=rootOf(LocalPlayer)
     if not mine then return false end
-    local ok,distance=pcall(function() return (part.Position-mine.Position).Magnitude end)
-    return ok and distance<25
+    local ok,position=pcall(function() return part.Position end)
+    if not ok then return false end
+    local distance=(position-mine.Position).Magnitude
+    for _,plr in ipairs(Players:GetPlayers()) do
+        local root=plr~=LocalPlayer and rootOf(plr)
+        if root and (root.Position-position).Magnitude<distance then return false end
+    end
+    return distance<30
+end
+-- (watched for up to that long without being touched: yours once nothing has come in for it
+-- from the game for a few frames and it's either moving under your own game or lying still
+-- nearer you than anyone else)
+local function watchYours(bomb,seconds)
+    local started,quiet=os.clock(),0
+    repeat
+        if not usable(bomb) then return false end
+        if receiveAge(bomb)>0.03 then quiet=0 else quiet=quiet+1 end
+        if quiet>=6 then
+            local ok,speed=pcall(function() return bomb.AssemblyLinearVelocity.Magnitude end)
+            if (ok and speed>1) or nearestYou(bomb) then return true end
+        end
+        RunService.Heartbeat:Wait()
+    until os.clock()-started>seconds
+    return false
 end
 -- (a new bomb taken out in place of the one there is, once the toy can be thrown again: nil if
 -- it can't be yet, or none came out)
@@ -20588,32 +20628,42 @@ end
 local function runFling(target)
     local targetRoot=rootOf(target)
     if not targetRoot or not aliveCharacter(target) then return false,"no target" end
-    local bomb,reason=getBomb()
-    if not bomb then
-        if os.clock()-lastMissingNotice>8 then lastMissingNotice=os.clock();notify("Bomb Fling: "..tostring(reason),3) end
-        return false,reason
-    end
     if not rootOf(LocalPlayer) then return false,"you are not alive" end
     local label=reportName(target)
-    -- (not yours to move any more, as when the last player it went after was handed it, and
-    -- not by you either: a new one taken out instead, once the toy can be thrown again)
-    if not owned(bomb) and not nearYou(bomb) then
-        note(("NOTYOURS %s ra=%.2f cooldown=%.0f"):format(label,receiveAge(bomb),cooldownLeft()))
-        local fresh=takeOutAnother()
-        if fresh then
-            bomb=fresh
-        elseif os.clock()-lastMissingNotice>8 then
-            lastMissingNotice=os.clock()
-            notify(("Bomb Fling: the bomb isn't yours to move right now (a new one can be taken out in %d s)"):format(math.ceil(cooldownLeft())),3)
+    local bomb,reason=getBomb()
+    -- (not known to be yours yet: watched a moment first; one given to someone else is
+    -- replaced by a new one taken out, once the toy can be thrown again)
+    if bomb and bomb~=verified then
+        local yours=watchYours(bomb,os.clock()-lastDeploy.at<3 and 1.2 or 0.4)
+        note(("CHECK %s %s ra=%.2f"):format(label,yours and "yours" or "not yours",receiveAge(bomb)))
+        if yours then
+            verified=bomb
+        else
+            local another=takeOutAnother()
+            local anotherYours=another~=nil and watchYours(another,1.2)
+            if another then note(("CHECK %s new one %s"):format(label,anotherYours and "yours" or "not yours")) end
+            if anotherYours then
+                bomb,verified=another,another
+            else
+                bomb=nil
+                local wait=cooldownLeft()
+                reason="the bomb was given to another player (it's nearer them)"
+                    ..(wait>0.05 and (", a new one can be taken out in %d s"):format(math.ceil(wait)) or "")
+            end
         end
+    end
+    if not bomb then
+        if os.clock()-lastMissingNotice>8 then lastMissingNotice=os.clock();notify("Bomb Fling: "..tostring(reason),3) end
+        note(("SKIP %s %s"):format(label,tostring(reason)))
+        return false,reason
     end
     stats.flings=stats.flings+1
     do
         local mine=rootOf(LocalPlayer)
         local velocity=targetRoot.AssemblyLinearVelocity
-        note(("START %s dist=%.0f speed=%.1f own=%d near=%d ra=%.2f ping=%dms duration=%d leadExtra=%.2f"):format(label,
+        note(("START %s dist=%.0f speed=%.1f ping=%dms duration=%d leadExtra=%.2f"):format(label,
             mine and (targetRoot.Position-mine.Position).Magnitude or -1,Vector3.new(velocity.X,0,velocity.Z).Magnitude,
-            owned(bomb) and 1 or 0,nearYou(bomb) and 1 or 0,receiveAge(bomb),math.floor(pingSeconds()*1000),settings.duration,leadExtra))
+            math.floor(pingSeconds()*1000),settings.duration,leadExtra))
     end
     -- (sent down that fast, a physics step carries it far past the map's fall limit before it's
     -- put back on them: no limit while it flings, as Reset Player does)
@@ -20626,59 +20676,41 @@ local function runFling(target)
     local top,bottom=bodySpan(target.Character,targetRoot)
     local passStarted=os.clock()
     local spin=math.random()*math.pi*2
-    -- (where they've been over the last moment, for their speed in case the game doesn't send
-    -- it for other players)
-    local samples={}
+    -- (where they've been over the last moment: see measure)
+    local track={}
     local limit=settings.duration
     -- (the distances tried for a moving player, to tell which one reached them)
     local tried,lastLead={},0
-    local keptAt=os.clock()
-    local wasYours=owned(bomb)
     local lastSample=-math.huge
     local ok,err=pcall(function()
         while os.clock()-started<limit and alive and runtimeAlive do
-            local yours=owned(bomb)
-            if yours~=wasYours then
-                note(("OWN %s %s ra=%.2f"):format(label,yours and "yours" or "not yours",receiveAge(bomb)))
-                wasYours=yours
-            end
-            if yours then keptAt=os.clock() end
-            if not usable(bomb) or os.clock()-keptAt>1 then
-                note(("REPLACE %s %s"):format(label,usable(bomb) and "not yours for 1 s" or ("gone: "..tostring(unusableWhy(bomb)))))
-                -- gone (it went off), or handed to someone else a second ago without flinging
-                -- them: another one taken out straight away, and on with that
-                local fresh=takeOutAnother()
-                if fresh then
-                    bomb=fresh
-                    rotation,thickness=flatRotation(bomb)
-                elseif not usable(bomb) then
-                    break
-                end
-                keptAt=os.clock()
+            if not usable(bomb) then
+                -- gone (it went off): another one taken out straight away, and on with that
+                note(("REPLACE %s gone: %s"):format(label,tostring(unusableWhy(bomb))))
+                local another=takeOutAnother()
+                if not (another and watchYours(another,1.2)) then break end
+                bomb,verified=another,another
+                rotation,thickness=flatRotation(bomb)
             end
             if not targetRoot.Parent or not aliveCharacter(target) then note(("GONE %s (died or left)"):format(label));break end
-            if flung(targetRoot,startY) then
-                hit,hitAt=true,os.clock()
-                note(("HIT %s after %.2fs"):format(label,hitAt-started))
-                break
-            end
             -- (put there after each physics step, as Reset Player does)
             RunService.Heartbeat:Wait()
             if not targetRoot.Parent or not usable(bomb) then continue end
-            -- from just above the top of their head down to their feet, then again from the top
-            local progress=(os.clock()-passStarted)/PASS_TIME
-            if progress>=1 then
-                passStarted=os.clock();progress=0
-                if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
-            end
             local now=os.clock()
             local current=targetRoot.Position
-            samples[#samples+1]={at=now,position=current}
-            while #samples>2 and now-samples[2].at>=0.25 do table.remove(samples,1) end
-            local measured=Vector3.zero
-            if now-samples[1].at>=0.08 then measured=(current-samples[1].position)/(now-samples[1].at) end
-            -- (the speed the game sends for them, unless it says they're still while they move;
-            -- measured over a quarter second, not frame to frame, where it jumps about)
+            local measured=measure(track,current,now)
+            if flungNow(targetRoot,startY,measured) then
+                hit,hitAt=true,now
+                note(("HIT %s after %.2fs"):format(label,hitAt-started))
+                break
+            end
+            -- from just above the top of their head down to their feet, then again from the top
+            local progress=(now-passStarted)/PASS_TIME
+            if progress>=1 then
+                passStarted=now;progress=0
+                if target.Character then top,bottom=bodySpan(target.Character,targetRoot) end
+            end
+            -- (the speed the game sends for them, unless it says they're still while they move)
             local velocity=targetRoot.AssemblyLinearVelocity
             local horizontal=Vector3.new(velocity.X,0,velocity.Z)
             local measuredHorizontal=Vector3.new(measured.X,0,measured.Z)
@@ -20730,9 +20762,9 @@ local function runFling(target)
                 local forward=horizontal.Magnitude>0.5 and horizontal.Unit or Vector3.new(look.X,0,look.Z)
                 forward=forward.Magnitude>0.01 and forward.Unit or Vector3.new(0,0,-1)
                 local offset=position-current
-                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f own=%d ra=%.2f their=%.0f"):format(label,
+                note(("S %s ahead=%.1f side=%.1f up=%.1f speed=%.1f lead=%.2f moved=%.0f"):format(label,
                     offset:Dot(forward),offset:Dot(Vector3.new(-forward.Z,0,forward.X)),offset.Y,horizontal.Magnitude,
-                    moving and lead or 0,yours and 1 or 0,receiveAge(bomb),targetRoot.AssemblyLinearVelocity.Magnitude))
+                    moving and lead or 0,measured.Magnitude))
             end
         end
     end)
@@ -20741,8 +20773,12 @@ local function runFling(target)
     -- (flung after the fling ended, too late to be seen in it: watched a moment longer)
     if not hit and targetRoot.Parent then
         task.spawn(function()
+            local after={}
             while os.clock()-endedAt<3 and targetRoot.Parent and alive do
-                if flung(targetRoot,startY) then note(("LATEHIT %s %.2fs after the end"):format(label,os.clock()-endedAt));break end
+                if flungNow(targetRoot,startY,measure(after,targetRoot.Position,os.clock())) then
+                    note(("LATEHIT %s %.2fs after the end"):format(label,os.clock()-endedAt))
+                    break
+                end
                 task.wait(0.05)
             end
         end)
@@ -20753,19 +20789,10 @@ local function runFling(target)
             if current~=current then workspace.FallenPartsDestroyHeight=previousLimit end
         end)
     end
-    -- still yours: parked under you, stopped, so the game keeps it yours (it hands a loose
-    -- part to whoever is nearest) and the next fling can use it straight away instead of
-    -- waiting out the toy's cooldown for a new one. Not yours any more: moving it would only
-    -- show on your screen, so it's left where it is.
-    if bomb and usable(bomb) then
-        local mine=rootOf(LocalPlayer)
-        local yours=owned(bomb)
-        pcall(function()
-            if mine and yours then bomb.CFrame=mine.CFrame*CFrame.new(0,-2.4,0) end
-            bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
-        end)
-        note((mine and yours) and "PARK under you" or ("LEFT where it is (not yours, ra=%.2f)"):format(receiveAge(bomb)))
-    end
+    -- (stopped where it is; between flings it's carried along under you: see CARRY_DEPTH)
+    if bomb and usable(bomb) then pcall(function()
+        bomb.AssemblyLinearVelocity=Vector3.zero;bomb.AssemblyAngularVelocity=Vector3.zero
+    end) end
     if not ok then stats.lastError=tostring(err) end
     if hit then
         stats.hits=stats.hits+1
@@ -20781,6 +20808,26 @@ local function runFling(target)
     end
     return hit
 end
+-- (carried along just under you between flings: see CARRY_DEPTH. Not while Firefly Protection
+-- holds it as its particle helper.)
+local carry=RunService.Heartbeat:Connect(function()
+    local bomb=verified
+    if flinging or not alive or not runtimeAlive or not bomb or bomb~=ownBomb then return end
+    if not usable(bomb) then verified=nil;return end
+    local protection=runtime.FireflyProtection
+    if protection and type(protection.CurrentBomb)=="function" then
+        local ok,held=pcall(protection.CurrentBomb)
+        if ok and held==bomb then return end
+    end
+    local mine=rootOf(LocalPlayer)
+    if not mine then return end
+    pcall(function()
+        if bomb.CanCollide then bomb.CanCollide=false end
+        bomb.CFrame=mine.CFrame*CFrame.new(0,-CARRY_DEPTH,0)
+        bomb.AssemblyLinearVelocity=Vector3.zero
+        bomb.AssemblyAngularVelocity=Vector3.zero
+    end)
+end)
 -- Flings run one after another from a queue on their own thread, so pressing a button
 -- never waits on (or freezes for) a fling.
 local function pump()
@@ -20839,7 +20886,7 @@ runtime.BombFling={Fling=fling,GetBomb=getBomb,
     local count=0
     for _ in pairs(bombs) do count=count+1 end
     local copy=table.clone(stats);copy.tracked=count;copy.ownBomb=ownBomb and ownBomb:GetFullName() or nil
-    copy.queue=#flingQueue;copy.flinging=flinging;copy.reportLines=#reportLines
+    copy.queue=#flingQueue;copy.flinging=flinging;copy.reportLines=#reportLines;copy.verified=verified~=nil and verified==ownBomb
     return copy
 end}
 
@@ -21010,7 +21057,7 @@ section:AddButton("Copy Fling Report",function()
         "VisualsV2 Bomb Fling report",
         ("executor=%s ping=%dms duration=%d leadExtra=%.2f cooldownLeft=%.0f"):format(executor,math.floor(pingSeconds()*1000),settings.duration,leadExtra,cooldownLeft()),
         ("flings=%d hits=%d deploys=%d deployFailures=%d lastError=%s"):format(stats.flings,stats.hits,stats.deploys,stats.deployFailures,tostring(stats.lastError)),
-        "time = the server's clock (the same on every screen). S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; own = the bomb is yours (ra = seconds since the game last sent it to you, 0 = yours); their = their total speed",
+        "time = the server's clock (the same on every screen). CHECK = the bomb watched untouched to see if it's yours; SKIP = no fling, and why. S = where the bomb was put, from the target as you see them: ahead/side/up studs along the way they move; speed = theirs; lead = seconds ahead; moved = how fast they really moved (studs/s)",
         "",
     },"\n")..table.concat(reportLines,"\n")
     local copied=type(reportClipboard)=="function" and pcall(reportClipboard,text)
@@ -21132,7 +21179,7 @@ toggle("Hide Button Text","bombFlingHideText",function(value)
 end)
 
 local respawn=LocalPlayer.CharacterAdded:Connect(function()
-    ownBomb=nil
+    ownBomb,verified=nil,nil
     table.clear(flingQueue)
 end)
 runtime.RegisterReset(function()
@@ -21146,7 +21193,7 @@ runtime.RegisterReset(function()
     settings.duration,settings.auraDistance=MIN_DURATION,15
     if not runtimeAlive then
         alive=false
-        watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect()
+        watch:Disconnect();unwatch:Disconnect();respawn:Disconnect();recentWatch:Disconnect();carry:Disconnect()
         table.clear(recentParts)
     end
 end)
